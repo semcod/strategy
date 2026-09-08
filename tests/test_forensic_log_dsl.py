@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import timezone, datetime, timedelta
 
 from fastapi.testclient import TestClient
 
@@ -83,7 +83,7 @@ def test_ticket_lifecycle_and_evidence_are_written_to_public_log(tmp_path) -> No
 
 def test_historical_events_are_partitioned_by_utc_day(tmp_path) -> None:
     pf = Planfile(str(tmp_path))
-    yesterday = datetime.now(UTC) - timedelta(days=1)
+    yesterday = datetime.now(timezone.utc) - timedelta(days=1)
     with pf.store.mutation_lock():
         pf.store._append_operational_line(
             operational_line(
@@ -111,7 +111,7 @@ def test_historical_events_are_partitioned_by_utc_day(tmp_path) -> None:
 
 def test_first_read_on_new_utc_day_rotates_the_public_file(tmp_path) -> None:
     pf = Planfile(str(tmp_path))
-    yesterday = datetime.now(UTC) - timedelta(days=1)
+    yesterday = datetime.now(timezone.utc) - timedelta(days=1)
     event = parse_operational(
         operational_line(
             timestamp=yesterday.isoformat(),

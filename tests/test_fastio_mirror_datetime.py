@@ -8,7 +8,7 @@ writes take 5-7 s instead of ~0.4 s.
 """
 
 import json
-from datetime import UTC, date, datetime
+from datetime import timezone, date, datetime
 
 import pytest
 
@@ -55,7 +55,7 @@ def test_direct_writer_normalizes_runtime_timestamps(sprint_file):
         sprint_file,
         {
             "created_at": date(2026, 8, 26),
-            "execution": {"finished_at": datetime(2026, 8, 26, 15, tzinfo=UTC)},
+            "execution": {"finished_at": datetime(2026, 8, 26, 15, tzinfo=timezone.utc)},
         },
     )
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import UTC, datetime
+from datetime import timezone, datetime
 
 import pytest
 from pydantic import ValidationError
@@ -200,7 +200,7 @@ def test_checkpoint_and_terminal_receipt_resume_partial_completion(tmp_path) -> 
         "phase": "testing",
         "head_sha": "d" * 40,
         "evidence_refs": ["artifact://semcod/planfile/test-report-r1"],
-        "recorded_at": datetime.now(UTC).isoformat(),
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
     }
 
     checkpointed = backend.checkpoint_delivery_candidate(checkpoint)
@@ -238,7 +238,7 @@ def test_conflicting_checkpoint_and_receipt_fail_closed(tmp_path) -> None:
         "phase": "testing",
         "head_sha": None,
         "evidence_refs": [],
-        "recorded_at": datetime.now(UTC).isoformat(),
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
     }
     backend.checkpoint_delivery_candidate(checkpoint)
     with pytest.raises(DeliveryPlanError, match="delivery_plan_checkpoint_conflict"):
@@ -267,7 +267,7 @@ def test_split_state_links_children_and_rewires_successor(tmp_path) -> None:
         "parent_candidate_key": "oversized-parent",
         "parent_candidate_digest": parent["candidate_digest"],
         "child_candidate_keys": ["bounded-child-a", "bounded-child-b"],
-        "recorded_at": datetime.now(UTC).isoformat(),
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
     }
 
     linked = backend.record_delivery_split(split)

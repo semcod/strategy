@@ -7,7 +7,7 @@ import shutil
 import tempfile
 import time
 from contextlib import contextmanager
-from datetime import UTC, datetime, timedelta
+from datetime import timezone, datetime, timedelta
 from enum import Enum
 from pathlib import Path
 from threading import RLock
@@ -144,16 +144,16 @@ class Store(StoreFileMixin, TicketStoreMixin):
         try:
             return datetime.fromisoformat(value).date().isoformat()
         except ValueError:
-            return datetime.now(UTC).date().isoformat()
+            return datetime.now(timezone.utc).date().isoformat()
 
     def _forensic_path_for_date(self, value: str) -> Path:
-        today = datetime.now(UTC).date().isoformat()
+        today = datetime.now(timezone.utc).date().isoformat()
         if value == today:
             return self._forensic_log_path
         return self._forensic_log_history_dir / f"logs-{value}.dsl.txt"
 
     def _rotate_forensic_log_unlocked(self) -> None:
-        today = datetime.now(UTC).date().isoformat()
+        today = datetime.now(timezone.utc).date().isoformat()
         try:
             recorded_date = self._forensic_log_date_path.read_text(encoding="utf-8").strip()
         except FileNotFoundError:
@@ -227,7 +227,7 @@ class Store(StoreFileMixin, TicketStoreMixin):
                 ).strip()
             except FileNotFoundError:
                 recorded_date = ""
-            if recorded_date == datetime.now(UTC).date().isoformat():
+            if recorded_date == datetime.now(timezone.utc).date().isoformat():
                 return
         with self.mutation_lock():
             self._ensure_forensic_log_projection_unlocked()
@@ -246,7 +246,7 @@ class Store(StoreFileMixin, TicketStoreMixin):
         from planfile.core.forensic_log_dsl import parse
 
         self.ensure_forensic_log_projection()
-        selected_date = date or datetime.now(UTC).date().isoformat()
+        selected_date = date or datetime.now(timezone.utc).date().isoformat()
         path = self._forensic_path_for_date(selected_date)
         result: deque[str] = deque(maxlen=max(1, min(int(limit), 5000)))
         try:
@@ -273,7 +273,7 @@ class Store(StoreFileMixin, TicketStoreMixin):
     def forensic_log_days(self) -> list[dict]:
         """Describe every public daily PLOG partition, newest first."""
         self.ensure_forensic_log_projection()
-        today = datetime.now(UTC).date().isoformat()
+        today = datetime.now(timezone.utc).date().isoformat()
         paths = [(today, self._forensic_log_path)]
         for path in self._forensic_log_history_dir.glob("logs-*.dsl.txt"):
             paths.append((path.name.removeprefix("logs-").removesuffix(".dsl.txt"), path))
@@ -609,9 +609,9 @@ class Store(StoreFileMixin, TicketStoreMixin):
             else:
                 continue
             if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=UTC)
-            return parsed.astimezone(UTC)
-        return datetime.min.replace(tzinfo=UTC)
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        return datetime.min.replace(tzinfo=timezone.utc)
 
     @classmethod
     def _merge_sprint_snapshots(cls, current: dict, incoming: dict) -> dict:
@@ -819,14 +819,14 @@ class Store(StoreFileMixin, TicketStoreMixin):
         retention only applies to capacity-driven rotation and never keeps stale
         work in the operational sprint indefinitely.
         """
-        current = now or datetime.now(UTC)
+        current = now or datetime.now(timezone.utc)
         if current.tzinfo is None:
-            current = current.replace(tzinfo=UTC)
+            current = current.replace(tzinfo=timezone.utc)
         retention_days = config["retain_terminal_days"]
         if retention_days == 0:
             selected_ids = {ticket_id for _, ticket_id, _ in terminal}
         else:
-            cutoff_date = current.astimezone(UTC).date() - timedelta(
+            cutoff_date = current.astimezone(timezone.utc).date() - timedelta(
                 days=retention_days - 1
             )
             selected_ids = {
@@ -858,9 +858,9 @@ class Store(StoreFileMixin, TicketStoreMixin):
             else:
                 continue
             if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=UTC)
-            return parsed.astimezone(UTC)
-        return datetime.now(UTC)
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        return datetime.now(timezone.utc)
 
     def archive_completed(self, *, force: bool = False) -> dict:
         """Move stale terminal tickets into daily history files.
@@ -1630,7 +1630,7 @@ class Store(StoreFileMixin, TicketStoreMixin):
             }
             self._write_config(config)
 
-            stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
             backup_dir = self.base_dir / "storage-backups" / stamp / "sprints"
             backup_dir.mkdir(parents=True, exist_ok=False)
             moved = []
@@ -1940,7 +1940,7 @@ class Store(StoreFileMixin, TicketStoreMixin):
         previous_state = cls._execution_state(previous)
         current_state = cls._execution_state(current)
         entry = {
-            "timestamp": datetime.now(UTC).isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "action": "update",
             "source": "planfile.store",
             "changes": changed_keys,
@@ -2015,8 +2015,8 @@ class Store(StoreFileMixin, TicketStoreMixin):
         else:
             return None
         if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=UTC)
-        return parsed.astimezone(UTC)
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
 
     def _guard_expected_updated_at(
         self,
@@ -2131,7 +2131,7 @@ class Store(StoreFileMixin, TicketStoreMixin):
                     raise ValueError("evidence_idempotency_conflict")
                 return current, False
 
-            timestamp = datetime.now(UTC).isoformat()
+            timestamp = datetime.now(timezone.utc).isoformat()
             event = {
                 "schema": "planfile.ticket-evidence-event/v1",
                 "timestamp": timestamp,
@@ -2232,10 +2232,10 @@ class Store(StoreFileMixin, TicketStoreMixin):
                     execution_update["state"] = terminal_status
                     execution_update["assigned_to"] = None
                     execution_update["lease_expires_at"] = None
-                    execution_update["finished_at"] = datetime.now(UTC).isoformat()
+                    execution_update["finished_at"] = datetime.now(timezone.utc).isoformat()
                     serialized_updates["execution"] = execution_update
                 tickets[ticket_id].update(serialized_updates)
-                tickets[ticket_id]["updated_at"] = datetime.now(UTC).isoformat()
+                tickets[ticket_id]["updated_at"] = datetime.now(timezone.utc).isoformat()
                 changed_keys = sorted(
                     key
                     for key, value in serialized_updates.items()
@@ -2305,12 +2305,12 @@ class Store(StoreFileMixin, TicketStoreMixin):
             execution_update["state"] = terminal_status
             execution_update["assigned_to"] = None
             execution_update["lease_expires_at"] = None
-            execution_update["finished_at"] = datetime.now(UTC).isoformat()
+            execution_update["finished_at"] = datetime.now(timezone.utc).isoformat()
             serialized_updates["execution"] = execution_update
 
         current = dict(previous)
         current.update(serialized_updates)
-        current["updated_at"] = datetime.now(UTC).isoformat()
+        current["updated_at"] = datetime.now(timezone.utc).isoformat()
         changed_keys = sorted(
             key
             for key, value in serialized_updates.items()
@@ -2425,7 +2425,7 @@ class Store(StoreFileMixin, TicketStoreMixin):
 
                 moved_ticket = dict(previous_ticket)
                 moved_ticket["sprint"] = to_sprint
-                moved_ticket["updated_at"] = datetime.now(UTC).isoformat()
+                moved_ticket["updated_at"] = datetime.now(timezone.utc).isoformat()
                 history = list(moved_ticket.get("history") or [])
                 entry = self._build_history_entry(
                     previous_ticket,
@@ -2473,7 +2473,7 @@ class Store(StoreFileMixin, TicketStoreMixin):
                 previous_ticket = dict(source_tickets[ticket_id])
                 moved_ticket = dict(previous_ticket)
                 moved_ticket["sprint"] = to_sprint
-                moved_ticket["updated_at"] = datetime.now(UTC).isoformat()
+                moved_ticket["updated_at"] = datetime.now(timezone.utc).isoformat()
                 history = list(moved_ticket.get("history") or [])
                 entry = self._build_history_entry(
                     previous_ticket,

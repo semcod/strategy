@@ -6,7 +6,7 @@ import base64
 import hashlib
 import json
 import re
-from datetime import UTC, datetime
+from datetime import timezone, datetime
 from typing import Any
 from urllib.parse import quote, unquote
 
@@ -57,7 +57,7 @@ def redact(value: Any, key: str = "") -> Any:
 
 def _text(value: Any, fallback: str = "-") -> str:
     if isinstance(value, datetime):
-        value = value.astimezone(UTC).isoformat()
+        value = value.astimezone(timezone.utc).isoformat()
     normalized = str(value if value is not None else "").strip()
     return normalized or fallback
 
@@ -66,7 +66,7 @@ def create_event(**input: Any) -> dict[str, Any]:
     data = redact(input.get("data") or {})
     core = {
         "schema": SCHEMA,
-        "timestamp": _text(input.get("timestamp") or datetime.now(UTC).isoformat()),
+        "timestamp": _text(input.get("timestamp") or datetime.now(timezone.utc).isoformat()),
         "kind": _text(input.get("kind"), "operation"),
         "source": _text(input.get("source"), "planfile"),
         "ticket_id": _text(input.get("ticket_id")),

@@ -1234,3 +1234,7 @@ _Last updated by [taskill](https://github.com/oqlos/taskill) at 2026-04-25 18:22
 > Implemented a comprehensive configuration management system and CLI interface for the planfile project, including new command groups for backlog, sync, ticket, and validate operations.
 
 <!-- taskill:status:end -->
+
+## Dependency maintenance
+
+See [internal dependency updates](docs/dependencies.md) for daily updates, locked tests and Python support.

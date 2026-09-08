@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import timezone, datetime, timedelta
 
 import yaml
 
@@ -22,7 +22,7 @@ def test_forced_archive_applies_retention_but_never_moves_active_ticket(tmp_path
     }
     store._config_path.write_text(yaml.safe_dump(config, sort_keys=False))
 
-    old = datetime.now(UTC) - timedelta(days=2)
+    old = datetime.now(timezone.utc) - timedelta(days=2)
     store.create_ticket(Ticket(id="PLF-001", name="Old done", status="done", created_at=old, updated_at=old))
     store.create_ticket(Ticket(id="PLF-002", name="Old blocked", status="blocked", created_at=old, updated_at=old))
     store.create_ticket(Ticket(id="PLF-003", name="Keep active", status="open"))

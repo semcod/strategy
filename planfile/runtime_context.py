@@ -4,7 +4,7 @@ import json
 import os
 import sys
 import tempfile
-from datetime import UTC, datetime
+from datetime import timezone, datetime
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +25,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
 
 
 def _now() -> str:
-    return datetime.now(UTC).isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _read_json(path: Path) -> Any:

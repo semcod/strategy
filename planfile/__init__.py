@@ -12,7 +12,7 @@ __version__ = "0.1.125"
 __author__ = "Tom Sapletta"
 __email__ = "tom@sapletta.com"
 
-from datetime import UTC, datetime, timedelta
+from datetime import timezone, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -82,7 +82,7 @@ class Planfile:
 
     @staticmethod
     def _utcnow() -> datetime:
-        return datetime.now(UTC)
+        return datetime.now(timezone.utc)
 
     def __init__(self, project_path: str = "."):
         self.store = PlanfileStore(project_path)
@@ -419,6 +419,7 @@ class Planfile:
         *,
         reason: str | None = None,
         actor: str | None = None,
+        expected_updated_at: str | None = None,
     ) -> Ticket | None:
         ticket = self.get_ticket(ticket_id)
         if not ticket:
@@ -446,7 +447,10 @@ class Planfile:
             last_error=None,
         )
         execution = TicketExecution(**execution_data)
-        return self.update_ticket(ticket_id, status="done", execution=execution, outputs=outputs, reason=reason, actor=actor)
+        return self.update_ticket(
+            ticket_id, status="done", execution=execution, outputs=outputs,
+            reason=reason, actor=actor, expected_updated_at=expected_updated_at,
+        )
 
     def fail_ticket(
         self,
