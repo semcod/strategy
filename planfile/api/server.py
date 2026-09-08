@@ -986,6 +986,38 @@ def public_forensic_log_days():
     }
 
 
+#: Sub-models a PATCH may address. A request carries each of them as a complete
+#: object, so they are merged rather than written through.
+_MERGEABLE_TICKET_SECTIONS = ("executor", "execution", "inputs", "outputs")
+
+
+def _merged_ticket_updates(body: "TicketUpdate", current) -> dict:
+    """Apply only the fields a PATCH actually sent.
+
+    FastAPI parses `{"inputs": {"uri_processes": [...]}}` into a complete
+    `TicketInputs`, filling every omitted field with its model default. Writing
+    that straight through replaces the stored section, so one partial update
+    silently erases everything the caller did not mention — `inputs.api_body`,
+    `execution.started_at`, `execution.last_error` and the rest.
+
+    Pydantic records which fields were present at each level, so merge the sent
+    keys onto what is stored. An explicitly sent `null` still clears its field;
+    only omission is now inert.
+    """
+    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    for section in _MERGEABLE_TICKET_SECTIONS:
+        if section not in body.model_fields_set:
+            continue
+        sent = getattr(body, section)
+        if sent is None:
+            continue
+        supplied = sent.model_dump(mode="json", exclude_unset=True)
+        stored = getattr(current, section, None)
+        base = stored.model_dump(mode="json", exclude_none=True) if stored is not None else {}
+        updates[section] = {**base, **supplied}
+    return updates
+
+
 @app.patch("/tickets/{ticket_id}", tags=["tickets"])
 async def update_ticket(ticket_id: str, body: TicketUpdate):
     pf = get_planfile()
@@ -1001,7 +1033,7 @@ async def update_ticket(ticket_id: str, body: TicketUpdate):
         body.inputs if body.inputs is not None else current.inputs,
         require_for_legacy=False,
     )
-    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    updates = _merged_ticket_updates(body, current)
     if body.status is not None and str(body.status) != str(current.status.value):
         updates["actor"] = body.actor or "unknown:api"
         updates["reason"] = body.reason or f"status_transition:{current.status.value}->{body.status}"
