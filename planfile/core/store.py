@@ -15,6 +15,7 @@ from threading import RLock
 import yaml
 from pydantic import BaseModel
 
+from .jsonl_tail import OPERATIONS_TAIL_MAX_BYTES, read_jsonl_tail
 from .models import TICKET_CONTRACT_VERSION, Ticket
 from .store_files import StoreFileMixin
 from .store_tickets import TicketStoreMixin
@@ -463,27 +464,36 @@ class Store(StoreFileMixin, TicketStoreMixin):
             handle.flush()
             os.fsync(handle.fileno())
 
-    def operational_events(self, *, limit: int = 200, ticket_id: str | None = None) -> list[dict]:
-        """Read the append-only operational journal, newest first."""
-        from collections import deque
+    def operational_events(
+        self,
+        *,
+        limit: int = 200,
+        ticket_id: str | None = None,
+        max_bytes: int = OPERATIONS_TAIL_MAX_BYTES,
+    ) -> list[dict]:
+        """Read the append-only operational journal, newest first.
 
-        bounded: deque[dict] = deque(maxlen=max(1, min(int(limit), 5000)))
-        try:
-            source = self._operations_path.open("r", encoding="utf-8")
-        except FileNotFoundError:
-            return []
-        with source:
-            for line in source:
-                if not line.strip():
-                    continue
-                try:
-                    row = json.loads(line)
-                except ValueError:
-                    continue
-                if ticket_id and str((row.get("event") or {}).get("ticket_id") or "") != str(ticket_id):
-                    continue
-                bounded.append(row)
-        return list(reversed(bounded))
+        The journal only grows, and every caller wants its newest end, so the
+        read walks backwards and stops as soon as it has ``limit`` rows. Reading
+        forward meant parsing the whole file to return the last few hundred
+        rows: on the observed store that was 379 MB and ~170k `json.loads` calls
+        per request, on the single-worker event loop that also serves ticket
+        writes.
+
+        ``max_bytes`` bounds the walk so a filter that matches nothing recent
+        degrades to a short read instead of a full scan; such a query returns
+        the matches inside the budget rather than every match in history.
+        """
+        return read_jsonl_tail(
+            self._operations_path,
+            limit=max(1, min(int(limit), 5000)),
+            max_bytes=max_bytes,
+            keep=(
+                None
+                if not ticket_id
+                else lambda row: str((row.get("event") or {}).get("ticket_id") or "") == str(ticket_id)
+            ),
+        )
 
     @contextmanager
     def mutation_lock(self):
