@@ -8,11 +8,11 @@ This package provides:
 - CLI and API for applying and reviewing strategies
 """
 
-__version__ = "0.1.124"
+__version__ = "0.1.125"
 __author__ = "Tom Sapletta"
 __email__ = "tom@sapletta.com"
 
-from datetime import UTC, datetime, timedelta
+from datetime import timezone, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -38,6 +38,14 @@ from planfile.core.models import (
 )
 from planfile.core.store import PlanfileStore
 from planfile.delegation import DelegationActor, load_delegation_actors
+from planfile.delivery_plan import DeliveryPlanError, DeliveryPlanRepository
+from planfile.delivery_plan_contracts import (
+    CompiledWorkPlanV1,
+    DeliveryCheckpointV1,
+    DeliveryPlanSplitV1,
+    TicketCandidateV1,
+    WorkPlanTerminalReceiptV1,
+)
 from planfile.dsl import DSLExecutor, DSLParser, DSLResult
 from planfile.testql_integration import (
     build_testql_tickets,
@@ -74,7 +82,7 @@ class Planfile:
 
     @staticmethod
     def _utcnow() -> datetime:
-        return datetime.now(UTC)
+        return datetime.now(timezone.utc)
 
     def __init__(self, project_path: str = "."):
         self.store = PlanfileStore(project_path)
@@ -142,8 +150,8 @@ class Planfile:
             ticket = Ticket(id=ticket_id, name=name, **kwargs)
             return self.store._create_ticket_unlocked(ticket), True
 
-    def get_ticket(self, ticket_id: str):
-        return self.store.get_ticket(ticket_id)
+    def get_ticket(self, ticket_id: str, *, repair_index: bool = True):
+        return self.store.get_ticket(ticket_id, repair_index=repair_index)
 
     def list_tickets(self, **filters):
         return self.store.list_tickets(**filters)
@@ -311,9 +319,22 @@ class Planfile:
         )
         return min(runnable, key=self._ticket_sort_key, default=None)
 
-    def update_ticket(self, ticket_id: str, reason: str | None = None, actor: str | None = None, **updates):
+    def update_ticket(
+        self,
+        ticket_id: str,
+        reason: str | None = None,
+        actor: str | None = None,
+        expected_updated_at: str | None = None,
+        **updates,
+    ):
         """Delegate with optional reason (why status/etc changed) and actor (who/by)."""
-        return self.store.update_ticket(ticket_id, reason=reason, actor=actor, **updates)
+        return self.store.update_ticket(
+            ticket_id,
+            reason=reason,
+            actor=actor,
+            expected_updated_at=expected_updated_at,
+            **updates,
+        )
 
     def append_ticket_evidence(
         self,
@@ -398,6 +419,7 @@ class Planfile:
         *,
         reason: str | None = None,
         actor: str | None = None,
+        expected_updated_at: str | None = None,
     ) -> Ticket | None:
         ticket = self.get_ticket(ticket_id)
         if not ticket:
@@ -425,9 +447,20 @@ class Planfile:
             last_error=None,
         )
         execution = TicketExecution(**execution_data)
-        return self.update_ticket(ticket_id, status="done", execution=execution, outputs=outputs, reason=reason, actor=actor)
+        return self.update_ticket(
+            ticket_id, status="done", execution=execution, outputs=outputs,
+            reason=reason, actor=actor, expected_updated_at=expected_updated_at,
+        )
 
-    def fail_ticket(self, ticket_id: str, error: str, *, reason: str | None = None, actor: str | None = None) -> Ticket | None:
+    def fail_ticket(
+        self,
+        ticket_id: str,
+        error: str,
+        *,
+        reason: str | None = None,
+        actor: str | None = None,
+        expected_updated_at: str | None = None,
+    ) -> Ticket | None:
         ticket = self.get_ticket(ticket_id)
         if not ticket:
             return None
@@ -452,6 +485,7 @@ class Planfile:
             execution=execution,
             reason=reason or error,
             actor=actor,
+            expected_updated_at=expected_updated_at,
         )
 
     def block_ticket(self, ticket_id: str, reason: str | None = None, note: str | None = None, *, actor: str | None = None) -> Ticket | None:
@@ -697,6 +731,45 @@ class Planfile:
                 tickets.append(Ticket(id=ticket_id, **data))
             return self.store._create_tickets_bulk_unlocked(tickets)
 
+    @property
+    def delivery_plans(self) -> DeliveryPlanRepository:
+        """Return the durable, execution-inert delivery-plan repository."""
+
+        return DeliveryPlanRepository(self.store)
+
+    def materialize_delivery_plan(
+        self,
+        compiled_plan: dict,
+        *,
+        terminal_receipts: list[dict] | tuple[dict, ...] = (),
+    ) -> dict:
+        """Atomically materialize a Strategy DAG or recover its exact prior IDs."""
+
+        return self.delivery_plans.materialize(
+            compiled_plan,
+            terminal_receipts=terminal_receipts,
+        )
+
+    def checkpoint_delivery_candidate(self, checkpoint: dict) -> dict:
+        """Append one explicit, hash-bound continuation checkpoint."""
+
+        return self.delivery_plans.record_checkpoint(checkpoint)
+
+    def record_delivery_terminal_receipt(self, plan_id: str, receipt: dict) -> dict:
+        """Deduplicate a protected terminal receipt and close its exact slice."""
+
+        return self.delivery_plans.record_terminal_receipt(plan_id, receipt)
+
+    def record_delivery_split(self, split: dict) -> dict:
+        """Link a split-required parent to already materialized bounded children."""
+
+        return self.delivery_plans.record_split(split)
+
+    def resume_delivery_plan(self, plan_id: str) -> dict:
+        """Read the deterministic continuation frontier without executing tools."""
+
+        return self.delivery_plans.resume(plan_id)
+
 
 def quick_ticket(name: str, tool: str = "unknown", **kwargs) -> Ticket:
     """One-liner ticket creation for tools."""
@@ -714,6 +787,9 @@ __all__ = [
     # Tickets
     "Ticket", "TicketStatus", "TicketSource",
     "TicketExecutor", "TicketExecution", "TicketInputs", "TicketOutputs",
+    "CompiledWorkPlanV1", "DeliveryCheckpointV1", "DeliveryPlanError",
+    "DeliveryPlanRepository", "DeliveryPlanSplitV1", "TicketCandidateV1",
+    "WorkPlanTerminalReceiptV1",
     # Store & API
     "PlanfileStore", "Planfile", "quick_ticket",
     # Executors (lazy loaded)

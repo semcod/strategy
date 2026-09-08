@@ -196,7 +196,9 @@ def test_oql_backend_transition_runs_verified_migration(tmp_path):
     assert rejected.error == "config_storage_reshard_required"
 
 
-def test_mcp_dsl_uses_the_same_configuration_contract(tmp_path):
+def test_mcp_dsl_uses_the_same_configuration_contract(tmp_path, monkeypatch):
+    monkeypatch.setenv("PLANFILE_MCP_ALLOW_MUTATION", "1")
+    monkeypatch.setenv("PLANFILE_MCP_PROJECT_ROOT", str(tmp_path))
     result = handle_tool_call(
         "planfile_dsl",
         {

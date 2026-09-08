@@ -793,6 +793,11 @@ ws://localhost:8000/ws?project_path=.
 # Start MCP server
 python -m planfile.mcp.server
 
+# Mutating tools and DSL commands require an explicit operator capability.
+PLANFILE_MCP_ALLOW_MUTATION=1 \
+PLANFILE_MCP_PROJECT_ROOT=/path/to/projects \
+python -m planfile.mcp.server
+
 # MCP tool call (JSON-RPC)
 {
   "jsonrpc": "2.0",
@@ -807,6 +812,11 @@ python -m planfile.mcp.server
   }
 }
 ```
+
+Without `PLANFILE_MCP_ALLOW_MUTATION=1`, MCP only accepts the read-only DSL
+verbs `get`, `help`, `list`, `query`, `show`, and `validate`, plus structured
+read tools. Project paths are confined to the current directory unless
+`PLANFILE_MCP_PROJECT_ROOT` selects a different trusted root.
 
 **Supported DSL Commands:**
 - `list tickets` — list with filters (sprint, status, priority, label)
@@ -1224,3 +1234,7 @@ _Last updated by [taskill](https://github.com/oqlos/taskill) at 2026-04-25 18:22
 > Implemented a comprehensive configuration management system and CLI interface for the planfile project, including new command groups for backlog, sync, ticket, and validate operations.
 
 <!-- taskill:status:end -->
+
+## Dependency maintenance
+
+See [internal dependency updates](docs/dependencies.md) for daily updates, locked tests and Python support.

@@ -5,10 +5,12 @@ import os
 import re
 import shutil
 import tempfile
+import time
 from contextlib import contextmanager
-from datetime import UTC, datetime, timedelta
+from datetime import timezone, datetime, timedelta
 from enum import Enum
 from pathlib import Path
+from threading import RLock
 
 import yaml
 from pydantic import BaseModel
@@ -21,6 +23,14 @@ from .store_tickets import TicketStoreMixin
 
 class ImmutableTerminalReopenError(RuntimeError):
     """Raised when an ordinary mutation tries to reactivate done/canceled work."""
+
+
+class TicketIndexContentionError(RuntimeError):
+    """Raised when the disposable index cannot capture a stable snapshot."""
+
+
+class TicketUpdatedAtConflictError(RuntimeError):
+    """Raised when a ticket changed after the caller observed it."""
 
 
 class Store(StoreFileMixin, TicketStoreMixin):
@@ -58,6 +68,9 @@ class Store(StoreFileMixin, TicketStoreMixin):
         self._evidence_dir = self.base_dir / "evidence"
         self._ticket_index_path = self.base_dir / "index" / "tickets.sqlite3"
         self._ticket_index_rebuild_lock_path = self.base_dir / "index" / ".rebuild.lock"
+        self._ticket_index_rebuild_deferred_until = 0.0
+        self._ticket_index_signature_cache: tuple[float, tuple, tuple] | None = None
+        self._ticket_index_signature_cache_lock = RLock()
         self._history_locations_path = self.base_dir / "index" / "history-locations.yaml"
 
     def _storage_config(self) -> dict:
@@ -132,16 +145,16 @@ class Store(StoreFileMixin, TicketStoreMixin):
         try:
             return datetime.fromisoformat(value).date().isoformat()
         except ValueError:
-            return datetime.now(UTC).date().isoformat()
+            return datetime.now(timezone.utc).date().isoformat()
 
     def _forensic_path_for_date(self, value: str) -> Path:
-        today = datetime.now(UTC).date().isoformat()
+        today = datetime.now(timezone.utc).date().isoformat()
         if value == today:
             return self._forensic_log_path
         return self._forensic_log_history_dir / f"logs-{value}.dsl.txt"
 
     def _rotate_forensic_log_unlocked(self) -> None:
-        today = datetime.now(UTC).date().isoformat()
+        today = datetime.now(timezone.utc).date().isoformat()
         try:
             recorded_date = self._forensic_log_date_path.read_text(encoding="utf-8").strip()
         except FileNotFoundError:
@@ -215,7 +228,7 @@ class Store(StoreFileMixin, TicketStoreMixin):
                 ).strip()
             except FileNotFoundError:
                 recorded_date = ""
-            if recorded_date == datetime.now(UTC).date().isoformat():
+            if recorded_date == datetime.now(timezone.utc).date().isoformat():
                 return
         with self.mutation_lock():
             self._ensure_forensic_log_projection_unlocked()
@@ -234,7 +247,7 @@ class Store(StoreFileMixin, TicketStoreMixin):
         from planfile.core.forensic_log_dsl import parse
 
         self.ensure_forensic_log_projection()
-        selected_date = date or datetime.now(UTC).date().isoformat()
+        selected_date = date or datetime.now(timezone.utc).date().isoformat()
         path = self._forensic_path_for_date(selected_date)
         result: deque[str] = deque(maxlen=max(1, min(int(limit), 5000)))
         try:
@@ -261,7 +274,7 @@ class Store(StoreFileMixin, TicketStoreMixin):
     def forensic_log_days(self) -> list[dict]:
         """Describe every public daily PLOG partition, newest first."""
         self.ensure_forensic_log_projection()
-        today = datetime.now(UTC).date().isoformat()
+        today = datetime.now(timezone.utc).date().isoformat()
         paths = [(today, self._forensic_log_path)]
         for path in self._forensic_log_history_dir.glob("logs-*.dsl.txt"):
             paths.append((path.name.removeprefix("logs-").removesuffix(".dsl.txt"), path))
@@ -494,8 +507,10 @@ class Store(StoreFileMixin, TicketStoreMixin):
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
             except ImportError:
                 pass
+            self._invalidate_ticket_index_signature_cache()
             yield
         finally:
+            self._invalidate_ticket_index_signature_cache()
             try:
                 import fcntl
 
@@ -604,9 +619,9 @@ class Store(StoreFileMixin, TicketStoreMixin):
             else:
                 continue
             if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=UTC)
-            return parsed.astimezone(UTC)
-        return datetime.min.replace(tzinfo=UTC)
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        return datetime.min.replace(tzinfo=timezone.utc)
 
     @classmethod
     def _merge_sprint_snapshots(cls, current: dict, incoming: dict) -> dict:
@@ -814,14 +829,14 @@ class Store(StoreFileMixin, TicketStoreMixin):
         retention only applies to capacity-driven rotation and never keeps stale
         work in the operational sprint indefinitely.
         """
-        current = now or datetime.now(UTC)
+        current = now or datetime.now(timezone.utc)
         if current.tzinfo is None:
-            current = current.replace(tzinfo=UTC)
+            current = current.replace(tzinfo=timezone.utc)
         retention_days = config["retain_terminal_days"]
         if retention_days == 0:
             selected_ids = {ticket_id for _, ticket_id, _ in terminal}
         else:
-            cutoff_date = current.astimezone(UTC).date() - timedelta(
+            cutoff_date = current.astimezone(timezone.utc).date() - timedelta(
                 days=retention_days - 1
             )
             selected_ids = {
@@ -853,9 +868,9 @@ class Store(StoreFileMixin, TicketStoreMixin):
             else:
                 continue
             if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=UTC)
-            return parsed.astimezone(UTC)
-        return datetime.now(UTC)
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        return datetime.now(timezone.utc)
 
     def archive_completed(self, *, force: bool = False) -> dict:
         """Move stale terminal tickets into daily history files.
@@ -1181,11 +1196,57 @@ class Store(StoreFileMixin, TicketStoreMixin):
     def _ticket_index_signature(self) -> tuple:
         return self.sprint_signature("all"), self._evidence_revision()
 
-    def _ticket_index_records(self) -> list[dict]:
+    @staticmethod
+    def _ticket_index_signature_cache_seconds() -> float:
+        """Bound source-signature reuse during a concurrent API read burst."""
+        try:
+            configured = float(
+                os.environ.get("PLANFILE_TICKET_INDEX_SIGNATURE_CACHE_SECONDS", "0.25")
+            )
+        except (TypeError, ValueError):
+            configured = 0.25
+        return max(0.0, min(configured, 3.0))
+
+    def _cached_ticket_index_signature(self) -> tuple:
+        """Coalesce expensive filesystem scans without hiding local mutations.
+
+        A large store may contain thousands of evidence files. FastAPI executes
+        synchronous reads in parallel, so scanning that tree independently in
+        every worker amplifies one dashboard refresh into CPU and I/O
+        starvation. The mutation lock invalidates this process-local snapshot
+        before and after every write; the short TTL bounds observation of
+        changes made by another process.
+        """
+        now = time.monotonic()
+        probe = self._ticket_index_signature_cache_probe()
+        with self._ticket_index_signature_cache_lock:
+            cached = self._ticket_index_signature_cache
+            if (
+                cached is not None
+                and cached[2] == probe
+                and now - cached[0] <= self._ticket_index_signature_cache_seconds()
+            ):
+                return cached[1]
+            signature = self._ticket_index_signature()
+            self._ticket_index_signature_cache = (time.monotonic(), signature, probe)
+            return signature
+
+    def _ticket_index_signature_cache_probe(self) -> tuple:
+        """Cheaply detect the active-queue edits that must never wait for TTL."""
+        try:
+            evidence_dir_mtime = self._evidence_dir.stat().st_mtime_ns
+        except OSError:
+            evidence_dir_mtime = -1
+        return self.sprint_signature("current"), evidence_dir_mtime
+
+    def _invalidate_ticket_index_signature_cache(self) -> None:
+        with self._ticket_index_signature_cache_lock:
+            self._ticket_index_signature_cache = None
+
+    def _ticket_index_records(self):
         from planfile.core.fastio import read_yaml_fast
 
         storage = self._sharded_storage() if self._uses_sharded_storage() else None
-        records = []
         position = 0
         for sprint_id in self._all_sprint_ids():
             if storage is not None:
@@ -1198,9 +1259,8 @@ class Store(StoreFileMixin, TicketStoreMixin):
                 ticket = self._ticket_from_data(raw)
                 if ticket is None:
                     continue
-                records.append(self._ticket_index_record(ticket, sprint_id, position))
+                yield self._ticket_index_record(ticket, sprint_id, position)
                 position += 1
-        return records
 
     @staticmethod
     def _ticket_index_record(ticket: Ticket, sprint: str, position: int = 0) -> dict:
@@ -1287,6 +1347,10 @@ class Store(StoreFileMixin, TicketStoreMixin):
         index = self._sqlite_ticket_index()
         if not (force or self.ticket_index_enabled()):
             return index.status()
+        if not force and time.monotonic() < self._ticket_index_rebuild_deferred_until:
+            raise TicketIndexContentionError(
+                "ticket_index_rebuild_deferred_after_source_contention"
+            )
         signature = self._ticket_index_signature()
         if not force and index.is_current(signature):
             return index.status(signature) | {"rebuilt": False}
@@ -1296,31 +1360,53 @@ class Store(StoreFileMixin, TicketStoreMixin):
                 return index.status(signature) | {"rebuilt": False}
             return self._rebuild_ticket_index_unlocked(index, force=force)
 
+    def require_current_ticket_index(self, *, signature: tuple | None = None) -> dict:
+        """Validate the projection without rebuilding it on the caller's thread.
+
+        Latency-sensitive API reads use this guard.  A stale projection is a
+        maintenance condition, not permission for an arbitrary GET request to
+        parse the complete durable archive.
+        """
+        index = self._sqlite_ticket_index()
+        if not self.ticket_index_enabled():
+            raise TicketIndexContentionError("ticket_index_disabled")
+        if signature is None:
+            signature = self._cached_ticket_index_signature()
+        if not index.is_current(signature):
+            raise TicketIndexContentionError("ticket_index_stale")
+        return index.status(signature) | {"rebuilt": False}
+
     def _rebuild_ticket_index_unlocked(self, index, *, force: bool) -> dict:
         """Rebuild while the caller holds the cross-process index lock."""
         for _attempt in range(2):
             signature_before = self._ticket_index_signature()
             if not force and index.is_current(signature_before):
                 return index.status(signature_before) | {"rebuilt": False}
-            records = self._ticket_index_records()
-            signature_after = self._ticket_index_signature()
-            if signature_before != signature_after:
-                force = True
-                continue
             try:
-                count = index.rebuild(records, signature_after)
+                count = index.rebuild(self._ticket_index_records(), signature_before)
             except Exception as exc:
                 import sqlite3
 
                 if not isinstance(exc, sqlite3.DatabaseError):
                     raise
                 index.reset()
-                count = index.rebuild(records, signature_after)
+                count = index.rebuild(self._ticket_index_records(), signature_before)
+            signature_after = self._ticket_index_signature()
+            if signature_before != signature_after:
+                force = True
+                continue
+            self._ticket_index_rebuild_deferred_until = 0.0
             return index.status(signature_after) | {
                 "rebuilt": True,
                 "tickets": count,
             }
-        raise RuntimeError("ticket_index_sources_changed_during_rebuild")
+        # YAML remains authoritative. Immediate repeated rebuilds during a
+        # write burst amplify contention and can exhaust an API worker. Give
+        # callers a bounded window to read the durable files directly.
+        self._ticket_index_rebuild_deferred_until = time.monotonic() + 5.0
+        raise TicketIndexContentionError(
+            "ticket_index_sources_changed_during_rebuild"
+        )
 
     @contextmanager
     def ticket_index_rebuild_lock(self):
@@ -1364,8 +1450,8 @@ class Store(StoreFileMixin, TicketStoreMixin):
         signature = self._ticket_index_signature() if index.path.exists() else None
         return index.status(signature) | {"enabled": self.ticket_index_enabled()}
 
-    def indexed_ticket(self, ticket_id: str) -> Ticket | None:
-        self.ensure_ticket_index()
+    def indexed_ticket(self, ticket_id: str, *, repair: bool = True) -> Ticket | None:
+        (self.ensure_ticket_index if repair else self.require_current_ticket_index)()
         data = self._sqlite_ticket_index().get_ticket(ticket_id)
         return self._ticket_from_data(data) if data is not None else None
 
@@ -1376,8 +1462,13 @@ class Store(StoreFileMixin, TicketStoreMixin):
         filters: dict,
         offset: int,
         limit: int | None,
+        repair: bool = True,
+        signature: tuple | None = None,
     ) -> tuple[list[dict], int]:
-        self.ensure_ticket_index()
+        if repair:
+            self.ensure_ticket_index()
+        else:
+            self.require_current_ticket_index(signature=signature)
         return self._sqlite_ticket_index().list_summaries(
             sprint=sprint,
             filters=filters,
@@ -1392,9 +1483,14 @@ class Store(StoreFileMixin, TicketStoreMixin):
         filters: dict,
         offset: int,
         limit: int | None,
+        repair: bool = True,
+        signature: tuple | None = None,
     ) -> tuple[list[dict], int]:
         """Read full ticket JSON directly from the disposable SQLite projection."""
-        self.ensure_ticket_index()
+        if repair:
+            self.ensure_ticket_index()
+        else:
+            self.require_current_ticket_index(signature=signature)
         return self._sqlite_ticket_index().list_payloads(
             sprint=sprint,
             filters=filters,
@@ -1409,10 +1505,59 @@ class Store(StoreFileMixin, TicketStoreMixin):
         filters: dict,
         offset: int,
         limit: int | None,
+        repair: bool = True,
+        signature: tuple | None = None,
     ) -> tuple[bytes, int, int]:
         """Render full ticket JSON from SQLite without a Python object graph."""
-        self.ensure_ticket_index()
+        if repair:
+            self.ensure_ticket_index()
+        else:
+            self.require_current_ticket_index(signature=signature)
         return self._sqlite_ticket_index().render_payloads(
+            sprint=sprint,
+            filters=filters,
+            offset=offset,
+            limit=limit,
+        )
+
+    def indexed_ticket_json_metrics(
+        self,
+        *,
+        sprint: str,
+        filters: dict,
+        offset: int,
+        limit: int | None,
+        repair: bool = True,
+        signature: tuple | None = None,
+    ) -> tuple[int, int, int]:
+        """Measure a full-ticket page before materializing its JSON body."""
+        if repair:
+            self.ensure_ticket_index()
+        else:
+            self.require_current_ticket_index(signature=signature)
+        return self._sqlite_ticket_index().payload_page_metrics(
+            sprint=sprint,
+            filters=filters,
+            offset=offset,
+            limit=limit,
+        )
+
+    def indexed_ticket_operational_response(
+        self,
+        *,
+        sprint: str,
+        filters: dict,
+        offset: int,
+        limit: int | None,
+        repair: bool = True,
+        signature: tuple | None = None,
+    ) -> tuple[bytes, int, int]:
+        """Render a bounded operational page without Python JSON object graphs."""
+        if repair:
+            self.ensure_ticket_index()
+        else:
+            self.require_current_ticket_index(signature=signature)
+        return self._sqlite_ticket_index().render_operational_payloads(
             sprint=sprint,
             filters=filters,
             offset=offset,
@@ -1495,7 +1640,7 @@ class Store(StoreFileMixin, TicketStoreMixin):
             }
             self._write_config(config)
 
-            stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
             backup_dir = self.base_dir / "storage-backups" / stamp / "sprints"
             backup_dir.mkdir(parents=True, exist_ok=False)
             moved = []
@@ -1712,9 +1857,14 @@ class Store(StoreFileMixin, TicketStoreMixin):
 
         return ticket
 
-    def get_ticket(self, ticket_id: str) -> Ticket | None:
+    def get_ticket(self, ticket_id: str, *, repair_index: bool = True) -> Ticket | None:
         if self.ticket_index_enabled():
-            return self.indexed_ticket(ticket_id)
+            try:
+                return self.indexed_ticket(ticket_id, repair=repair_index)
+            except TicketIndexContentionError:
+                # SQLite is only an acceleration layer. Source contention must
+                # not make an exact durable-source lookup unavailable.
+                pass
         if self._uses_sharded_storage():
             storage = self._sharded_storage()
             active = storage.get_ticket("current", ticket_id)
@@ -1800,7 +1950,7 @@ class Store(StoreFileMixin, TicketStoreMixin):
         previous_state = cls._execution_state(previous)
         current_state = cls._execution_state(current)
         entry = {
-            "timestamp": datetime.now(UTC).isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "action": "update",
             "source": "planfile.store",
             "changes": changed_keys,
@@ -1843,14 +1993,61 @@ class Store(StoreFileMixin, TicketStoreMixin):
         return entry
 
     def update_ticket(
-        self, ticket_id: str, reason: str | None = None, actor: str | None = None, **updates
+        self,
+        ticket_id: str,
+        reason: str | None = None,
+        actor: str | None = None,
+        expected_updated_at: str | None = None,
+        **updates,
     ) -> Ticket | None:
         """Update a ticket. If status (or execution state) changes, a structured history entry
         is appended automatically, including optional `reason` (why) and `actor` (who / by whom).
         Use reason/actor (or _reason/_actor in **updates) for rich audit on status transitions.
         """
         with self.mutation_lock():
-            return self._update_ticket_unlocked(ticket_id, reason=reason, actor=actor, **updates)
+            return self._update_ticket_unlocked(
+                ticket_id,
+                reason=reason,
+                actor=actor,
+                expected_updated_at=expected_updated_at,
+                **updates,
+            )
+
+    @staticmethod
+    def _updated_at_instant(value: object) -> datetime | None:
+        if isinstance(value, datetime):
+            parsed = value
+        elif isinstance(value, str) and value:
+            try:
+                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+        else:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    def _guard_expected_updated_at(
+        self,
+        previous: dict,
+        expected_updated_at: str | None,
+    ) -> None:
+        if expected_updated_at is None:
+            return
+        projected = self._project_ticket_evidence(previous)
+        actual_updated_at = projected.get("updated_at")
+        actual_instant = self._updated_at_instant(actual_updated_at)
+        expected_instant = self._updated_at_instant(expected_updated_at)
+        if (
+            actual_instant is not None
+            and expected_instant is not None
+            and actual_instant == expected_instant
+        ):
+            return
+        if str(actual_updated_at or "") == str(expected_updated_at):
+            return
+        raise TicketUpdatedAtConflictError("ticket_updated_at_precondition_failed")
 
     def _guard_immutable_terminal_reopen(
         self,
@@ -1944,7 +2141,7 @@ class Store(StoreFileMixin, TicketStoreMixin):
                     raise ValueError("evidence_idempotency_conflict")
                 return current, False
 
-            timestamp = datetime.now(UTC).isoformat()
+            timestamp = datetime.now(timezone.utc).isoformat()
             event = {
                 "schema": "planfile.ticket-evidence-event/v1",
                 "timestamp": timestamp,
@@ -1997,7 +2194,12 @@ class Store(StoreFileMixin, TicketStoreMixin):
             return model, True
 
     def _update_ticket_unlocked(
-        self, ticket_id: str, reason: str | None = None, actor: str | None = None, **updates
+        self,
+        ticket_id: str,
+        reason: str | None = None,
+        actor: str | None = None,
+        expected_updated_at: str | None = None,
+        **updates,
     ) -> Ticket | None:
         index_was_current = self._begin_index_mutation()
         if self._uses_sharded_storage():
@@ -2005,6 +2207,7 @@ class Store(StoreFileMixin, TicketStoreMixin):
                 ticket_id,
                 reason=reason,
                 actor=actor,
+                expected_updated_at=expected_updated_at,
                 _index_was_current=index_was_current,
                 **updates,
             )
@@ -2017,6 +2220,7 @@ class Store(StoreFileMixin, TicketStoreMixin):
             tickets = sprint_data.get("tickets", {})
             if ticket_id in tickets:
                 previous = dict(tickets[ticket_id])
+                self._guard_expected_updated_at(previous, expected_updated_at)
                 # Extract history metadata (reason=why the change, actor/by=who performed it)
                 # Support both named params (from high-level methods) and _-prefixed or bare in updates
                 history_reason = (
@@ -2038,10 +2242,10 @@ class Store(StoreFileMixin, TicketStoreMixin):
                     execution_update["state"] = terminal_status
                     execution_update["assigned_to"] = None
                     execution_update["lease_expires_at"] = None
-                    execution_update["finished_at"] = datetime.now(UTC).isoformat()
+                    execution_update["finished_at"] = datetime.now(timezone.utc).isoformat()
                     serialized_updates["execution"] = execution_update
                 tickets[ticket_id].update(serialized_updates)
-                tickets[ticket_id]["updated_at"] = datetime.now(UTC).isoformat()
+                tickets[ticket_id]["updated_at"] = datetime.now(timezone.utc).isoformat()
                 changed_keys = sorted(
                     key
                     for key, value in serialized_updates.items()
@@ -2084,6 +2288,7 @@ class Store(StoreFileMixin, TicketStoreMixin):
         ticket_id: str,
         reason: str | None = None,
         actor: str | None = None,
+        expected_updated_at: str | None = None,
         _index_was_current: bool = False,
         **updates,
     ) -> Ticket | None:
@@ -2093,6 +2298,7 @@ class Store(StoreFileMixin, TicketStoreMixin):
             return None
         sprint, ticket_data = located
         previous = dict(ticket_data)
+        self._guard_expected_updated_at(previous, expected_updated_at)
         history_reason = reason or updates.pop("reason", None) or updates.pop("_reason", None)
         history_actor = actor or updates.pop("actor", None) or updates.pop("_actor", None)
         serialized_updates = {
@@ -2109,12 +2315,12 @@ class Store(StoreFileMixin, TicketStoreMixin):
             execution_update["state"] = terminal_status
             execution_update["assigned_to"] = None
             execution_update["lease_expires_at"] = None
-            execution_update["finished_at"] = datetime.now(UTC).isoformat()
+            execution_update["finished_at"] = datetime.now(timezone.utc).isoformat()
             serialized_updates["execution"] = execution_update
 
         current = dict(previous)
         current.update(serialized_updates)
-        current["updated_at"] = datetime.now(UTC).isoformat()
+        current["updated_at"] = datetime.now(timezone.utc).isoformat()
         changed_keys = sorted(
             key
             for key, value in serialized_updates.items()
@@ -2229,7 +2435,7 @@ class Store(StoreFileMixin, TicketStoreMixin):
 
                 moved_ticket = dict(previous_ticket)
                 moved_ticket["sprint"] = to_sprint
-                moved_ticket["updated_at"] = datetime.now(UTC).isoformat()
+                moved_ticket["updated_at"] = datetime.now(timezone.utc).isoformat()
                 history = list(moved_ticket.get("history") or [])
                 entry = self._build_history_entry(
                     previous_ticket,
@@ -2277,7 +2483,7 @@ class Store(StoreFileMixin, TicketStoreMixin):
                 previous_ticket = dict(source_tickets[ticket_id])
                 moved_ticket = dict(previous_ticket)
                 moved_ticket["sprint"] = to_sprint
-                moved_ticket["updated_at"] = datetime.now(UTC).isoformat()
+                moved_ticket["updated_at"] = datetime.now(timezone.utc).isoformat()
                 history = list(moved_ticket.get("history") or [])
                 entry = self._build_history_entry(
                     previous_ticket,

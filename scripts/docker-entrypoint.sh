@@ -10,17 +10,12 @@ NC='\033[0m' # No Color
 echo -e "${GREEN}🚀 Planfile CI/CD Runner${NC}"
 echo "=============================="
 
-# Start Ollama in background if enabled
-if [ "$ENABLE_OLLAMA" = "true" ]; then
-    echo -e "${YELLOW}🤖 Starting Ollama...${NC}"
-    ollama serve &
-    sleep 5
-    
-    # Pull default model if specified
-    if [ -n "$OLLAMA_MODEL" ]; then
-        echo -e "${YELLOW}📥 Pulling model: $OLLAMA_MODEL${NC}"
-        ollama pull "$OLLAMA_MODEL"
-    fi
+# The fleet runner no longer downloads or embeds Ollama. Call an external,
+# independently managed Ollama endpoint through the normal provider settings.
+if [ "${ENABLE_OLLAMA:-false}" = "true" ]; then
+    echo -e "${RED}❌ Embedded Ollama is not part of the locked runner image.${NC}" >&2
+    echo "Configure an external Ollama endpoint instead." >&2
+    exit 2
 fi
 
 # Check required environment variables

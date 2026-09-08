@@ -101,6 +101,42 @@ the storage transport.
 Compatibility policy: add a new version instead of weakening strict validation
 or changing the meaning of an existing result code.
 
+## Resumable delivery-plan DAG v1
+
+`Planfile.materialize_delivery_plan` accepts the closed, execution-inert
+`subactor.compiled-work-plan/v1` DTO emitted by Strategy. It atomically assigns
+stable Planfile ticket IDs to its candidates and persists the runtime projection
+under `.planfile/delivery-plans/<plan-id>.json`. Replaying the same DTO returns
+the same IDs; if power fails after the ticket batch lands but before the state
+replace, the exact candidate hash bindings recover that batch without creating
+duplicates.
+
+```python
+state = planfile.materialize_delivery_plan(compiled_plan)
+state = planfile.checkpoint_delivery_candidate(checkpoint_v1)
+state = planfile.record_delivery_split(split_v1)
+state = planfile.record_delivery_terminal_receipt(plan_id, terminal_receipt_v1)
+frontier = planfile.resume_delivery_plan(plan_id)
+```
+
+Checkpoints have an explicit sequence and phase and bind the plan hash,
+candidate digest and evidence references. Splits bind a `split_required` parent
+to at least two already-materialized bounded children and rewire its dependents.
+Terminal receipts are immutable and deduplicated by their complete protected
+binding. A conflicting checkpoint, receipt, plan revision or candidate digest
+fails closed.
+
+The returned resume frontier is a deterministic projection of those structured
+records. Planfile does not infer completion from chat prose and the contracts
+reject command, executor, grant and tool-authority fields. Materialization
+creates tickets with `executor=None`; selecting an agent or executing tools
+remains a separate authorized runtime concern.
+
+The persisted format is published as
+`planfile/schemas/delivery-plan-state.schema.v1.json`. The state file and its
+ticket YAML/event journals are authoritative continuity data and must be backed
+up together; disposable SQLite and fast-JSON indexes are not substitutes.
+
 ## Atomic external evidence append
 
 `POST /tickets/{ticket_id}/evidence` is the retry-safe write contract for an

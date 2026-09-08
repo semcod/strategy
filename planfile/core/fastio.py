@@ -113,7 +113,14 @@ def write_mirror(yaml_path: Path, data: Any, *, mtime_ns: int | None = None) -> 
         mtime_ns = _stat_mtime_ns(yaml_path)
     if mtime_ns is None:
         return
-    payload = {"version": _MIRROR_VERSION, "yaml_mtime_ns": mtime_ns, "data": data}
+    # Writers may pass values assembled in memory rather than values returned
+    # by ``load_yaml_text``.  Normalize here as the final JSON boundary too;
+    # otherwise one runtime datetime disables the mirror for the whole sprint.
+    payload = {
+        "version": _MIRROR_VERSION,
+        "yaml_mtime_ns": mtime_ns,
+        "data": _json_safe(data),
+    }
     try:
         _atomic_write_text(mirror_path(yaml_path), json.dumps(payload, ensure_ascii=False))
     except Exception as exc:

@@ -12,10 +12,6 @@ services:
       - MAX_ITERATIONS=5
       - AUTO_FIX=false
       
-      # Ollama settings
-      - ENABLE_OLLAMA=true
-      - OLLAMA_MODEL=qwen2.5:3b
-      
       # Strategy file (mount or copy)
       - STRATEGY_FILE=/app/planfile.yaml
       
@@ -55,9 +51,6 @@ services:
       
       # Mount git config if needed
       - ~/.gitconfig:/root/.gitconfig:ro
-    
-    ports:
-      - "11434:11434"  # Ollama API
     
     networks:
       - planfile

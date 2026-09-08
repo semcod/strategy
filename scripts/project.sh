@@ -37,4 +37,4 @@ $VENV/bin/redup scan . --format toon --output ./project
 #$VENV/bin/vallm batch ./src --recursive --semantic --model qwen2.5-coder:7b
 #$VENV/bin/vallm batch --parallel .
 $VENV/bin/vallm batch . --recursive --format toon --output ./project
-$VENV/bin/prefact -a -e "examples/**"
+$VENV/bin/prefact -a -e "examples/**" -e ".worktrees/**"

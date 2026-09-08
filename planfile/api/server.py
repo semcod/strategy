@@ -9,12 +9,13 @@ import asyncio
 import json
 import os
 import re
+import sqlite3
 import time
 from collections import deque
-from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from contextlib import asynccontextmanager, contextmanager
+from datetime import timezone, datetime
 from pathlib import Path
-from threading import RLock
+from threading import BoundedSemaphore, RLock
 from typing import Any, Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -44,7 +45,11 @@ from planfile.core.models import (
     TicketOutputs,
     TicketSource,
 )
-from planfile.core.store import ImmutableTerminalReopenError
+from planfile.core.store import (
+    ImmutableTerminalReopenError,
+    TicketIndexContentionError,
+    TicketUpdatedAtConflictError,
+)
 from planfile.runtime_context import (
     DEFAULT_CONFIG as DEFAULT_RUNTIME_CONFIG,
 )
@@ -58,11 +63,13 @@ from planfile.server_common import get_planfile
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     await _start_archive_maintenance()
+    await _start_ticket_index_maintenance()
     await _start_planfile_watcher()
     try:
         yield
     finally:
         await _stop_planfile_watcher()
+        await _stop_ticket_index_maintenance()
         await _stop_archive_maintenance()
 
 
@@ -73,6 +80,12 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+API_CAPABILITIES = [
+    "ticket.fail.expected_updated_at",
+    "ticket.update.expected_updated_at",
+    "ticket.complete.expected_updated_at",
+]
+
 
 @app.exception_handler(ImmutableTerminalReopenError)
 async def immutable_terminal_reopen_handler(
@@ -80,6 +93,17 @@ async def immutable_terminal_reopen_handler(
     __: ImmutableTerminalReopenError,
 ):
     return JSONResponse(status_code=409, content={"detail": "immutable_terminal_reopen"})
+
+
+@app.exception_handler(TicketUpdatedAtConflictError)
+async def ticket_updated_at_conflict_handler(
+    _: Request,
+    __: TicketUpdatedAtConflictError,
+):
+    return JSONResponse(
+        status_code=409,
+        content={"detail": "ticket_updated_at_precondition_failed"},
+    )
 
 _cors_origins = [
     origin.strip()
@@ -92,7 +116,12 @@ if _cors_origins:
         allow_origins=_cors_origins,
         allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE"],
         allow_headers=["Authorization", "Content-Type"],
-        expose_headers=["X-Planfile-View", "X-Result-Count", "X-Total-Count"],
+        expose_headers=[
+            "X-Planfile-View",
+            "X-Result-Count",
+            "X-Total-Count",
+            "X-Planfile-Recommended-Limit",
+        ],
     )
 
 NO_STORE_HEADERS = {"Cache-Control": "no-store, max-age=0"}
@@ -126,6 +155,10 @@ class TicketUpdate(BaseModel):
     outputs: TicketOutputs | None = None
     reason: str | None = None
     actor: str | None = None
+
+
+class TicketUpdateIfCurrentRequest(TicketUpdate):
+    expected_updated_at: str = Field(..., min_length=1, pattern=r"\S")
 
 
 class TicketEvidenceAppendRequest(BaseModel):
@@ -186,10 +219,19 @@ class TicketCompleteRequest(BaseModel):
     actor: str | None = None
 
 
+class TicketCompleteIfCurrentRequest(TicketCompleteRequest):
+    expected_updated_at: str = Field(..., min_length=1, pattern=r"\S")
+
+
 class TicketFailRequest(BaseModel):
     error: str
     reason: str | None = None
     actor: str | None = None
+    expected_updated_at: str | None = None
+
+
+class TicketFailIfCurrentRequest(TicketFailRequest):
+    expected_updated_at: str
 
 
 class TicketInputRequest(BaseModel):
@@ -330,13 +372,27 @@ def _validate_completion_receipt(receipt: dict[str, Any] | None, ticket_id: str)
 _TICKET_LIST_RESPONSE_CACHE: dict[tuple, tuple[bytes, int, int]] = {}
 _TICKET_LIST_RESPONSE_CACHE_LIMIT = 4
 _TICKET_LIST_RESPONSE_CACHE_LOCK = RLock()
+_TICKET_LIST_RESPONSE_BUILD_LOCKS = {
+    workload: tuple(RLock() for _ in range(32))
+    for workload in ("full", "operational", "summary", "archive-operational")
+}
+_TICKET_ARCHIVE_OPERATIONAL_BUILD_SLOTS = BoundedSemaphore(4)
 _TICKET_LIST_LATEST: dict[tuple, tuple[float, bytes, int, int]] = {}
+_TICKET_LIST_RESPONSE_CACHE_DEFAULT_BYTES = 256 * 1024 * 1024
+_TICKET_LIST_RESPONSE_CACHE_MIN_BYTES = 1024 * 1024
+_TICKET_LIST_RESPONSE_CACHE_MAX_BYTES = 512 * 1024 * 1024
+_TICKET_LIST_RESPONSE_DEFAULT_MAX_BYTES = 64 * 1024 * 1024
+_TICKET_LIST_RESPONSE_MIN_MAX_BYTES = 1024 * 1024
+_TICKET_LIST_RESPONSE_MAX_MAX_BYTES = 512 * 1024 * 1024
 _DASHBOARD_STALE_WINDOW_SECONDS = 30.0
+_INDEX_REPAIR_STALE_WINDOW_SECONDS = 300.0
 _SPRINT_SUMMARY_CACHE: dict[str, tuple[tuple[int, int], dict[str, Any]]] = {}
 _SPRINT_SUMMARY_CACHE_LOCK = RLock()
 
 
 def _ticket_snapshot_signature(pf, sprint: str) -> tuple:
+    if pf.store.ticket_index_enabled():
+        return pf.store._cached_ticket_index_signature()
     return pf.store.sprint_signature(sprint), pf.store._evidence_revision()
 
 
@@ -395,6 +451,188 @@ def _ticket_summary_payload(ticket) -> dict[str, Any]:
     )
 
 
+def _ticket_list_response_cache_byte_limit() -> int:
+    try:
+        configured = int(
+            os.environ.get(
+                "PLANFILE_TICKET_RESPONSE_CACHE_MAX_BYTES",
+                _TICKET_LIST_RESPONSE_CACHE_DEFAULT_BYTES,
+            )
+        )
+    except (TypeError, ValueError):
+        configured = _TICKET_LIST_RESPONSE_CACHE_DEFAULT_BYTES
+    return max(
+        _TICKET_LIST_RESPONSE_CACHE_MIN_BYTES,
+        min(configured, _TICKET_LIST_RESPONSE_CACHE_MAX_BYTES),
+    )
+
+
+def _ticket_list_response_byte_limit() -> int:
+    try:
+        configured = int(
+            os.environ.get(
+                "PLANFILE_TICKET_RESPONSE_MAX_BYTES",
+                _TICKET_LIST_RESPONSE_DEFAULT_MAX_BYTES,
+            )
+        )
+    except (TypeError, ValueError):
+        configured = _TICKET_LIST_RESPONSE_DEFAULT_MAX_BYTES
+    return max(
+        _TICKET_LIST_RESPONSE_MIN_MAX_BYTES,
+        min(configured, _TICKET_LIST_RESPONSE_MAX_MAX_BYTES),
+    )
+
+
+def _ticket_list_response_cached_bytes() -> int:
+    """Count retained response bodies once even when latest shares the object."""
+    bodies: dict[int, bytes] = {}
+    for body, _, _ in _TICKET_LIST_RESPONSE_CACHE.values():
+        bodies[id(body)] = body
+    for _, body, _, _ in _TICKET_LIST_LATEST.values():
+        bodies[id(body)] = body
+    return sum(len(body) for body in bodies.values())
+
+
+def _ticket_list_response_build_lock(query_key: tuple) -> RLock:
+    """Coalesce identical cache misses without blocking unrelated queue views."""
+    _, sprint, filters, _, limit, view = query_key
+    workload = (
+        "archive-operational"
+        if _ticket_list_is_heavy_archive(
+            sprint=sprint,
+            filters=filters,
+            limit=limit,
+            view=view,
+        )
+        else str(view)
+    )
+    locks = _TICKET_LIST_RESPONSE_BUILD_LOCKS[workload]
+    return locks[hash(query_key) % len(locks)]
+
+
+def _ticket_list_is_heavy_archive(
+    *,
+    sprint: str,
+    filters,
+    limit: int | None,
+    view: str,
+) -> bool:
+    return (
+        sprint == "all"
+        and view == "operational"
+        and not filters
+        and limit is not None
+        and limit >= 500
+    )
+
+
+@contextmanager
+def _ticket_list_workload_slot(
+    *,
+    sprint: str,
+    filters: dict,
+    limit: int | None,
+    view: Literal["full", "operational", "summary"],
+):
+    """Bound CPU-heavy archive projections while reserving queue-read capacity."""
+    if _ticket_list_is_heavy_archive(
+        sprint=sprint,
+        filters=filters,
+        limit=limit,
+        view=view,
+    ):
+        with _TICKET_ARCHIVE_OPERATIONAL_BUILD_SLOTS:
+            yield
+        return
+    yield
+
+
+def _cache_ticket_list_response(
+    *,
+    query_key: tuple,
+    versioned_key: tuple,
+    body: bytes,
+    total: int,
+    count: int,
+) -> None:
+    """Retain only bounded ticket projections; full archives can be hundreds of MB."""
+    with _TICKET_LIST_RESPONSE_CACHE_LOCK:
+        for existing_key in tuple(_TICKET_LIST_RESPONSE_CACHE):
+            if existing_key[:-1] == query_key:
+                _TICKET_LIST_RESPONSE_CACHE.pop(existing_key, None)
+        _TICKET_LIST_LATEST.pop(query_key, None)
+
+        byte_limit = _ticket_list_response_cache_byte_limit()
+        if len(body) > byte_limit:
+            return
+        if (
+            len(_TICKET_LIST_RESPONSE_CACHE) >= _TICKET_LIST_RESPONSE_CACHE_LIMIT
+            or _ticket_list_response_cached_bytes() + len(body) > byte_limit
+        ):
+            _TICKET_LIST_RESPONSE_CACHE.clear()
+            _TICKET_LIST_LATEST.clear()
+        _TICKET_LIST_RESPONSE_CACHE[versioned_key] = (body, total, count)
+        _TICKET_LIST_LATEST[query_key] = (time.monotonic(), body, total, count)
+
+
+def _bounded_stale_index_response(
+    pf,
+    *,
+    sprint: str,
+    filters: dict,
+    offset: int,
+    limit: int | None,
+    view: Literal["full", "operational", "summary"],
+    allow_unbounded_summary: bool = False,
+) -> Response | None:
+    """Serve a recent, coherent projection while its source index is repaired."""
+    archive_queue = sprint == "all" and limit is not None
+    legacy_summary = allow_unbounded_summary and view == "summary"
+    if view == "full" or not (archive_queue or legacy_summary):
+        return None
+    index = pf.store._sqlite_ticket_index()
+    if not index.has_fresh_snapshot(_INDEX_REPAIR_STALE_WINDOW_SECONDS):
+        return None
+    try:
+        if view == "summary":
+            payload, total = index.list_summaries(
+                sprint=sprint,
+                filters=filters,
+                offset=offset,
+                limit=limit,
+            )
+        elif view == "operational":
+            body, total, count = index.render_operational_payloads(
+                sprint=sprint,
+                filters=filters,
+                offset=offset,
+                limit=limit,
+            )
+            payload = None
+        else:
+            payload, total = index.list_payloads(
+                sprint=sprint,
+                filters=filters,
+                offset=offset,
+                limit=limit,
+            )
+    except (json.JSONDecodeError, OSError, sqlite3.DatabaseError):
+        return None
+    if view != "operational":
+        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return Response(
+        content=body,
+        media_type="application/json",
+        headers={
+            **NO_STORE_HEADERS,
+            "X-Planfile-View": view,
+            "X-Planfile-Index-State": "stale",
+            "X-Total-Count": str(total),
+            "X-Result-Count": str(count if view == "operational" else len(payload)),
+        },
+    )
+
+
 def _ticket_list_response(
     pf,
     *,
@@ -404,13 +642,20 @@ def _ticket_list_response(
     limit: int | None,
     view: Literal["full", "operational", "summary"] = "full",
     allow_stale: bool = False,
+    allow_index_stale: bool = False,
 ) -> Response:
     # FastAPI runs this sync endpoint in a worker pool. Serialize cache misses so
     # a burst of websocket-driven dashboard refreshes builds one 5+ MB response,
     # not one copy per browser tab.
-    with _TICKET_LIST_RESPONSE_CACHE_LOCK:
-        query_key = (str(pf.store.project_dir), sprint, tuple(sorted(filters.items())), offset, limit, view)
-        latest = _TICKET_LIST_LATEST.get(query_key)
+    query_key = (str(pf.store.project_dir), sprint, tuple(sorted(filters.items())), offset, limit, view)
+    with _ticket_list_response_build_lock(query_key), _ticket_list_workload_slot(
+        sprint=sprint,
+        filters=filters,
+        limit=limit,
+        view=view,
+    ):
+        with _TICKET_LIST_RESPONSE_CACHE_LOCK:
+            latest = _TICKET_LIST_LATEST.get(query_key)
         if allow_stale and latest is not None and time.monotonic() - latest[0] < _DASHBOARD_STALE_WINDOW_SECONDS:
             _, body, total, count = latest
             return Response(
@@ -425,38 +670,122 @@ def _ticket_list_response(
             )
         signature = _ticket_snapshot_signature(pf, sprint)
         key = query_key + (signature,)
-        cached = _TICKET_LIST_RESPONSE_CACHE.get(key)
+        with _TICKET_LIST_RESPONSE_CACHE_LOCK:
+            cached = _TICKET_LIST_RESPONSE_CACHE.get(key)
         if cached is not None:
             body, total, count = cached
         else:
             body = None
-            if pf.store.ticket_index_enabled():
-                if view == "summary":
-                    payload, total = pf.store.indexed_ticket_summaries(
+            use_durable_sources = not pf.store.ticket_index_enabled()
+            if not use_durable_sources:
+                try:
+                    if view == "summary":
+                        payload, total = pf.store.indexed_ticket_summaries(
+                            sprint=sprint,
+                            filters=filters,
+                            offset=offset,
+                            limit=limit,
+                            repair=False,
+                            signature=signature,
+                        )
+                        count = len(payload)
+                    elif view == "full":
+                        total, count, estimated_bytes = pf.store.indexed_ticket_json_metrics(
+                            sprint=sprint,
+                            filters=filters,
+                            offset=offset,
+                            limit=limit,
+                            repair=False,
+                            signature=signature,
+                        )
+                        response_limit = _ticket_list_response_byte_limit()
+                        if estimated_bytes > response_limit:
+                            requested_rows = max(1, count)
+                            recommended_limit = max(
+                                1,
+                                min(1000, int(requested_rows * response_limit / estimated_bytes)),
+                            )
+                            return JSONResponse(
+                                status_code=413,
+                                content={
+                                    "detail": "ticket_response_too_large",
+                                    "estimated_bytes": estimated_bytes,
+                                    "max_bytes": response_limit,
+                                    "recommended_limit": recommended_limit,
+                                    "offset": offset,
+                                },
+                                headers={
+                                    **NO_STORE_HEADERS,
+                                    "X-Planfile-View": view,
+                                    "X-Total-Count": str(total),
+                                    "X-Result-Count": str(count),
+                                    "X-Planfile-Recommended-Limit": str(recommended_limit),
+                                },
+                            )
+                        body, total, count = pf.store.indexed_ticket_json_response(
+                            sprint=sprint,
+                            filters=filters,
+                            offset=offset,
+                            limit=limit,
+                            repair=False,
+                            signature=signature,
+                        )
+                    elif view == "operational":
+                        body, total, count = pf.store.indexed_ticket_operational_response(
+                            sprint=sprint,
+                            filters=filters,
+                            offset=offset,
+                            limit=limit,
+                            repair=False,
+                            signature=signature,
+                        )
+                    else:
+                        payload, total = pf.store.indexed_ticket_payloads(
+                            sprint=sprint,
+                            filters=filters,
+                            offset=offset,
+                            limit=limit,
+                            repair=False,
+                            signature=signature,
+                        )
+                        count = len(payload)
+                except TicketIndexContentionError:
+                    if (
+                        latest is not None
+                        and time.monotonic() - latest[0]
+                        < _INDEX_REPAIR_STALE_WINDOW_SECONDS
+                    ):
+                        _, stale_body, stale_total, stale_count = latest
+                        return Response(
+                            content=stale_body,
+                            media_type="application/json",
+                            headers={
+                                **NO_STORE_HEADERS,
+                                "X-Planfile-View": view,
+                                "X-Planfile-Index-State": "stale",
+                                "X-Total-Count": str(stale_total),
+                                "X-Result-Count": str(stale_count),
+                            },
+                        )
+                    stale_index_response = _bounded_stale_index_response(
+                        pf,
                         sprint=sprint,
                         filters=filters,
                         offset=offset,
                         limit=limit,
+                        view=view,
+                        allow_unbounded_summary=allow_stale or allow_index_stale,
                     )
-                    count = len(payload)
-                elif view == "full":
-                    body, total, count = pf.store.indexed_ticket_json_response(
-                        sprint=sprint,
-                        filters=filters,
-                        offset=offset,
-                        limit=limit,
-                    )
-                else:
-                    payload, total = pf.store.indexed_ticket_payloads(
-                        sprint=sprint,
-                        filters=filters,
-                        offset=offset,
-                        limit=limit,
-                    )
-                    if view == "operational":
-                        payload = [_ticket_operational_payload(ticket) for ticket in payload]
-                    count = len(payload)
-            else:
+                    if stale_index_response is not None:
+                        return stale_index_response
+                    if view == "full" or sprint == "all":
+                        return JSONResponse(
+                            status_code=503,
+                            content={"detail": "ticket_index_repair_pending"},
+                            headers={**NO_STORE_HEADERS, "Retry-After": "5"},
+                        )
+                    use_durable_sources = True
+            if use_durable_sources:
                 tickets = pf.list_tickets(sprint=sprint, **filters)
                 total = len(tickets)
                 tickets = tickets[offset:] if limit is None else tickets[offset : offset + limit]
@@ -469,18 +798,17 @@ def _ticket_list_response(
                 ]
             if body is None:
                 body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-            # Do not retain a response assembled across a concurrent file change.
-            if signature == _ticket_snapshot_signature(pf, sprint):
-                logical_query = key[:-1]
-                for existing_key in tuple(_TICKET_LIST_RESPONSE_CACHE):
-                    if existing_key[:-1] == logical_query:
-                        _TICKET_LIST_RESPONSE_CACHE.pop(existing_key, None)
-                if len(_TICKET_LIST_RESPONSE_CACHE) >= _TICKET_LIST_RESPONSE_CACHE_LIMIT:
-                    _TICKET_LIST_RESPONSE_CACHE.clear()
-                _TICKET_LIST_RESPONSE_CACHE[key] = (body, total, count)
-                if len(_TICKET_LIST_LATEST) >= _TICKET_LIST_RESPONSE_CACHE_LIMIT and query_key not in _TICKET_LIST_LATEST:
-                    _TICKET_LIST_LATEST.clear()
-                _TICKET_LIST_LATEST[query_key] = (time.monotonic(), body, total, count)
+            # SQLite reads are transactionally coherent and version-keyed. The
+            # durable-file fallback still needs a second source check because it
+            # can span multiple independently replaced YAML files.
+            if pf.store.ticket_index_enabled() or signature == _ticket_snapshot_signature(pf, sprint):
+                _cache_ticket_list_response(
+                    query_key=query_key,
+                    versioned_key=key,
+                    body=body,
+                    total=total,
+                    count=count,
+                )
     return Response(
         content=body,
         media_type="application/json",
@@ -538,6 +866,7 @@ def list_tickets(
         limit=limit,
         view=effective_view,
         allow_stale=browser_client,
+        allow_index_stale=legacy_unbounded_request,
     )
 
 
@@ -580,7 +909,7 @@ def next_ticket(
 @app.get("/tickets/{ticket_id}", tags=["tickets"])
 def get_ticket(ticket_id: str):
     pf = get_planfile()
-    ticket = pf.get_ticket(ticket_id)
+    ticket = pf.get_ticket(ticket_id, repair_index=False)
     if not ticket:
         raise HTTPException(404, f"Ticket {ticket_id} not found")
     return ticket.model_dump(mode="json", exclude_none=True)
@@ -603,7 +932,7 @@ def public_forensic_log(
     limit: int = Query(500, ge=1, le=5000),
 ):
     """Bounded PLOG/1 text projection for applications, operators and LLMs."""
-    selected_day = day or datetime.now(UTC).date().isoformat()
+    selected_day = day or datetime.now(timezone.utc).date().isoformat()
     lines = get_planfile().store.forensic_log_lines(
         date=selected_day,
         ticket_id=ticket_id,
@@ -631,7 +960,7 @@ def public_forensic_log_json(
     """Parsed PLOG/1 records with the same bounded filters as the text file."""
     from planfile.core.forensic_log_dsl import parse
 
-    selected_day = day or datetime.now(UTC).date().isoformat()
+    selected_day = day or datetime.now(timezone.utc).date().isoformat()
     lines = get_planfile().store.forensic_log_lines(
         date=selected_day,
         ticket_id=ticket_id,
@@ -660,7 +989,7 @@ def public_forensic_log_days():
 @app.patch("/tickets/{ticket_id}", tags=["tickets"])
 async def update_ticket(ticket_id: str, body: TicketUpdate):
     pf = get_planfile()
-    current = pf.get_ticket(ticket_id)
+    current = pf.get_ticket(ticket_id, repair_index=False)
     if not current:
         raise HTTPException(404, f"Ticket {ticket_id} not found")
     _require_governed_history_metadata(current, body.actor, body.reason)
@@ -681,6 +1010,13 @@ async def update_ticket(ticket_id: str, body: TicketUpdate):
         raise HTTPException(404, f"Ticket {ticket_id} not found")
     await _broadcast_ticket_event("ticket.changed", "update", ticket)
     return ticket.model_dump(mode="json", exclude_none=True)
+
+
+@app.post("/tickets/{ticket_id}/update-if-current", tags=["tickets"])
+async def update_ticket_if_current(ticket_id: str, body: TicketUpdateIfCurrentRequest):
+    # A separate route prevents older servers silently ignoring the guard.
+    # Keep validation, the store mutation lock and event delivery shared.
+    return await update_ticket(ticket_id, body)
 
 
 @app.post("/tickets/{ticket_id}/evidence", tags=["tickets"])
@@ -758,7 +1094,7 @@ async def move_ticket(
 @app.post("/tickets/{ticket_id}/done", tags=["tickets"])
 async def done_ticket(ticket_id: str):
     pf = get_planfile()
-    current = pf.get_ticket(ticket_id)
+    current = pf.get_ticket(ticket_id, repair_index=False)
     if not current:
         raise HTTPException(404, f"Ticket {ticket_id} not found")
     if _requires_completion_receipt(current):
@@ -805,7 +1141,7 @@ async def claim_ticket(ticket_id: str, body: TicketClaimRequest):
 @app.post("/tickets/{ticket_id}/complete", tags=["tickets"])
 async def complete_ticket(ticket_id: str, body: TicketCompleteRequest):
     pf = get_planfile()
-    current = pf.get_ticket(ticket_id)
+    current = pf.get_ticket(ticket_id, repair_index=False)
     if not current:
         raise HTTPException(404, f"Ticket {ticket_id} not found")
     if _requires_completion_receipt(current):
@@ -818,6 +1154,7 @@ async def complete_ticket(ticket_id: str, body: TicketCompleteRequest):
         completion_receipt=body.completion_receipt,
         reason=body.reason or (body.completion_receipt or {}).get("reason") or body.note or "ticket_completed_via_api",
         actor=body.actor or (body.completion_receipt or {}).get("actor") or "unknown:api",
+        expected_updated_at=getattr(body, "expected_updated_at", None),
     )
     if not ticket:
         raise HTTPException(404, f"Ticket {ticket_id} not found")
@@ -825,10 +1162,14 @@ async def complete_ticket(ticket_id: str, body: TicketCompleteRequest):
     return ticket.model_dump(mode="json", exclude_none=True)
 
 
-@app.post("/tickets/{ticket_id}/fail", tags=["tickets"])
-async def fail_ticket(ticket_id: str, body: TicketFailRequest):
+@app.post("/tickets/{ticket_id}/complete-if-current", tags=["tickets"])
+async def complete_ticket_if_current(ticket_id: str, body: TicketCompleteIfCurrentRequest):
+    return await complete_ticket(ticket_id, body)
+
+
+async def _fail_ticket(ticket_id: str, body: TicketFailRequest):
     pf = get_planfile()
-    current = pf.get_ticket(ticket_id)
+    current = pf.get_ticket(ticket_id, repair_index=False)
     if not current:
         raise HTTPException(404, f"Ticket {ticket_id} not found")
     _require_governed_history_metadata(current, body.actor, body.reason)
@@ -837,6 +1178,7 @@ async def fail_ticket(ticket_id: str, body: TicketFailRequest):
         error=body.error,
         reason=body.reason or body.error,
         actor=body.actor or "unknown:api",
+        expected_updated_at=body.expected_updated_at,
     )
     if not ticket:
         raise HTTPException(404, f"Ticket {ticket_id} not found")
@@ -844,10 +1186,22 @@ async def fail_ticket(ticket_id: str, body: TicketFailRequest):
     return ticket.model_dump(mode="json", exclude_none=True)
 
 
+@app.post("/tickets/{ticket_id}/fail", tags=["tickets"])
+async def fail_ticket(ticket_id: str, body: TicketFailRequest):
+    return await _fail_ticket(ticket_id, body)
+
+
+@app.post("/tickets/{ticket_id}/fail-if-current", tags=["tickets"])
+async def fail_ticket_if_current(ticket_id: str, body: TicketFailIfCurrentRequest):
+    """Fail a ticket only when it is still the exact observed revision."""
+
+    return await _fail_ticket(ticket_id, body)
+
+
 @app.post("/tickets/{ticket_id}/input-required", tags=["tickets"])
 async def wait_for_input(ticket_id: str, body: TicketInputRequest):
     pf = get_planfile()
-    current = pf.get_ticket(ticket_id)
+    current = pf.get_ticket(ticket_id, repair_index=False)
     if not current:
         raise HTTPException(404, f"Ticket {ticket_id} not found")
     _require_governed_history_metadata(current, body.actor, body.reason)
@@ -1127,6 +1481,7 @@ _EVENT_HISTORY_LIMIT = 200
 _event_history: deque[dict[str, Any]] = deque(maxlen=_EVENT_HISTORY_LIMIT)
 _watch_task: asyncio.Task | None = None
 _archive_maintenance_task: asyncio.Task | None = None
+_ticket_index_maintenance_task: asyncio.Task | None = None
 _watch_snapshot: dict[str, str] = {}
 _watch_source_signature: tuple = ()
 
@@ -1219,7 +1574,7 @@ async def _watch_planfile_changes(interval_seconds: float = 3.0) -> None:
                 "type": "dashboard",
                 "action": "watch-error",
                 "ticket_id": "-",
-                "created_at": datetime.now(UTC).isoformat(),
+                "created_at": datetime.now(timezone.utc).isoformat(),
                 "ticket": {"execution": {"state": "failed", "last_error": str(exc)}},
             }
         )
@@ -1241,7 +1596,7 @@ async def _watch_planfile_changes(interval_seconds: float = 3.0) -> None:
                 "type": "dashboard",
                 "action": "watch-error",
                 "ticket_id": "-",
-                "created_at": datetime.now(UTC).isoformat(),
+                "created_at": datetime.now(timezone.utc).isoformat(),
                 "ticket": {"execution": {"state": "failed", "last_error": str(exc)}},
             }
             _remember_event(payload)
@@ -1263,7 +1618,7 @@ async def _archive_history_daily(interval_seconds: float = 300.0) -> None:
     """Run the idempotent history sweep once on startup and per UTC date."""
     last_run_date = None
     while True:
-        today = datetime.now(UTC).date()
+        today = datetime.now(timezone.utc).date()
         if today != last_run_date:
             try:
                 report = await asyncio.to_thread(
@@ -1275,7 +1630,7 @@ async def _archive_history_daily(interval_seconds: float = 300.0) -> None:
                         "type": "management.event",
                         "action": "daily-history-error",
                         "ticket_id": "-",
-                        "created_at": datetime.now(UTC).isoformat(),
+                        "created_at": datetime.now(timezone.utc).isoformat(),
                         "source": "planfile",
                         "tool": "planfile.api",
                         "level": "error",
@@ -1292,7 +1647,7 @@ async def _archive_history_daily(interval_seconds: float = 300.0) -> None:
                             "type": "management.event",
                             "action": "daily-history",
                             "ticket_id": "-",
-                            "created_at": datetime.now(UTC).isoformat(),
+                            "created_at": datetime.now(timezone.utc).isoformat(),
                             "source": "planfile",
                             "tool": "planfile.api",
                             "level": "info",
@@ -1302,6 +1657,70 @@ async def _archive_history_daily(interval_seconds: float = 300.0) -> None:
                         }
                     )
         await asyncio.sleep(interval_seconds)
+
+
+def _repair_ticket_index_if_unchanged(expected_signature: tuple) -> dict:
+    """Repair one stale projection from a mutation-stable durable snapshot."""
+    store = get_planfile().store
+    with store.mutation_lock():
+        current_signature = store._ticket_index_signature()
+        if current_signature != expected_signature:
+            return {"rebuilt": False, "deferred": True}
+        return store.ensure_ticket_index()
+
+
+async def _maintain_ticket_index(interval_seconds: float = 3.0) -> None:
+    """Coalesce stale-index repair away from latency-sensitive API requests."""
+    candidate_signature: tuple | None = None
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            store = get_planfile().store
+            if not store.ticket_index_enabled():
+                candidate_signature = None
+                continue
+            signature = await asyncio.to_thread(store._ticket_index_signature)
+            if await asyncio.to_thread(store._sqlite_ticket_index().is_current, signature):
+                candidate_signature = None
+                continue
+            if signature != candidate_signature:
+                candidate_signature = signature
+                continue
+            report = await asyncio.to_thread(
+                _repair_ticket_index_if_unchanged,
+                signature,
+            )
+            if report.get("rebuilt"):
+                candidate_signature = None
+        except Exception as exc:  # pragma: no cover - defensive runtime telemetry
+            __import__("logging").getLogger("planfile.api").warning(
+                "ticket index background repair failed: %s", exc
+            )
+
+
+async def _start_ticket_index_maintenance() -> None:
+    global _ticket_index_maintenance_task
+    if os.environ.get("PLANFILE_DISABLE_INDEX_MAINTENANCE") == "1":
+        return
+    if (
+        _ticket_index_maintenance_task is None
+        or _ticket_index_maintenance_task.done()
+    ):
+        _ticket_index_maintenance_task = asyncio.create_task(
+            _maintain_ticket_index()
+        )
+
+
+async def _stop_ticket_index_maintenance() -> None:
+    global _ticket_index_maintenance_task
+    if _ticket_index_maintenance_task is None:
+        return
+    _ticket_index_maintenance_task.cancel()
+    try:
+        await _ticket_index_maintenance_task
+    except asyncio.CancelledError:
+        pass
+    _ticket_index_maintenance_task = None
 
 
 async def _start_archive_maintenance() -> None:
@@ -1331,7 +1750,7 @@ async def _start_planfile_watcher() -> None:
             "type": "management.event",
             "action": "started",
             "ticket_id": "-",
-            "created_at": datetime.now(UTC).isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
             "source": "planfile",
             "tool": "planfile.api",
             "queue": "koru-management",
@@ -1379,7 +1798,7 @@ def list_events(
 @app.post("/events/test", tags=["events"])
 async def create_test_event(body: TestEventRequest):
     """Broadcast a synthetic dashboard event without mutating a real ticket."""
-    created_at = datetime.now(UTC).isoformat()
+    created_at = datetime.now(timezone.utc).isoformat()
     payload = {
         "type": "dashboard.test",
         "action": "error",
@@ -1412,7 +1831,7 @@ async def ingest_management_event(body: ManagementEventRequest):
         "type": "management.event",
         "action": body.action,
         "ticket_id": ticket_id,
-        "created_at": datetime.now(UTC).isoformat(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
         "source": body.source,
         "tool": body.tool,
         "queue": body.queue,
@@ -3130,7 +3549,7 @@ async def _broadcast_ticket_event(
         "type": event_type,
         "action": action,
         "ticket_id": ticket.id if ticket is not None else ticket_id,
-        "created_at": datetime.now(UTC).isoformat(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
     }
     if ticket is not None:
         payload["ticket"] = ticket.model_dump(mode="json", exclude_none=True)
@@ -3177,7 +3596,11 @@ async def websocket_dsl(websocket: WebSocket, project_path: str = "."):
 @app.get("/health", tags=["system"])
 def health():
     import planfile
-    return {"status": "ok", "version": planfile.__version__}
+    return {
+        "status": "ok",
+        "version": planfile.__version__,
+        "capabilities": API_CAPABILITIES,
+    }
 
 
 @app.get("/", response_class=HTMLResponse, tags=["system"])

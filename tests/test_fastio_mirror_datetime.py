@@ -8,10 +8,11 @@ writes take 5-7 s instead of ~0.4 s.
 """
 
 import json
+from datetime import timezone, date, datetime
 
 import pytest
 
-from planfile.core.fastio import load_yaml_text, mirror_path, read_yaml_fast
+from planfile.core.fastio import load_yaml_text, mirror_path, read_yaml_fast, write_mirror
 
 SPRINT_YAML = """\
 sprint:
@@ -47,6 +48,22 @@ def test_mirror_is_written_for_a_file_containing_timestamps(sprint_file):
     assert mirror.exists(), "mirror was not written — reads will re-parse the YAML forever"
     payload = json.loads(mirror.read_text(encoding="utf-8"))
     assert payload["yaml_mtime_ns"] == sprint_file.stat().st_mtime_ns
+
+
+def test_direct_writer_normalizes_runtime_timestamps(sprint_file):
+    write_mirror(
+        sprint_file,
+        {
+            "created_at": date(2026, 8, 26),
+            "execution": {"finished_at": datetime(2026, 8, 26, 15, tzinfo=timezone.utc)},
+        },
+    )
+
+    payload = json.loads(mirror_path(sprint_file).read_text(encoding="utf-8"))
+    assert payload["data"] == {
+        "created_at": "2026-08-26",
+        "execution": {"finished_at": "2026-08-26T15:00:00+00:00"},
+    }
 
 
 def test_second_read_is_served_from_the_mirror(sprint_file):

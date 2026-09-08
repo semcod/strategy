@@ -3,12 +3,17 @@
 import json
 import sys
 from io import StringIO
-from pathlib import Path
 
 import pytest
 
-from planfile import Planfile, TicketSource
+from planfile import Planfile
 from planfile.mcp import server
+
+
+@pytest.fixture(autouse=True)
+def _allow_test_mutations(monkeypatch, tmp_path):
+    monkeypatch.setenv("PLANFILE_MCP_ALLOW_MUTATION", "1")
+    monkeypatch.setenv("PLANFILE_MCP_PROJECT_ROOT", str(tmp_path))
 
 
 def test_mcp_handle_tool_call_list_tickets(tmp_path, monkeypatch):
@@ -117,3 +122,30 @@ def test_mcp_jsonrpc_stdio_lifecycle(monkeypatch):
     assert list_res["id"] == 2
     assert "tools" in list_res["result"]
     assert any(t["name"] == "planfile_dsl" for t in list_res["result"]["tools"])
+
+
+def test_mcp_mutations_require_operator_capability(monkeypatch, tmp_path):
+    monkeypatch.delenv("PLANFILE_MCP_ALLOW_MUTATION", raising=False)
+
+    with pytest.raises(PermissionError, match="PLANFILE_MCP_ALLOW_MUTATION"):
+        server._guard_tool_call("planfile_create_ticket", {})
+    with pytest.raises(PermissionError, match="PLANFILE_MCP_ALLOW_MUTATION"):
+        server._guard_tool_call(
+            "planfile_dsl",
+            {"command": "delete ticket PLF-001", "project_path": str(tmp_path)},
+        )
+
+    server._guard_tool_call(
+        "planfile_dsl",
+        {"command": "list tickets", "project_path": str(tmp_path)},
+    )
+
+
+def test_mcp_project_path_is_confined(tmp_path, monkeypatch):
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    monkeypatch.setenv("PLANFILE_MCP_PROJECT_ROOT", str(allowed))
+
+    assert server._require_project_path(str(allowed / "project")).startswith(str(allowed))
+    with pytest.raises(PermissionError, match="PLANFILE_MCP_PROJECT_ROOT"):
+        server._require_project_path(str(tmp_path / "outside"))

@@ -21,6 +21,15 @@ class TicketStoreMixin:
             # legacy YAML compat: British 'cancelled' → American 'canceled'
             if t_data.get('status') == 'cancelled':
                 t_data['status'] = 'canceled'
+            # Early queue writers used ``completed`` for both the ticket and
+            # execution terminal.  Project that historical alias as the
+            # canonical ``done`` state without rewriting the authoritative
+            # YAML or its audit history merely because it was read.
+            if t_data.get('status') == 'completed':
+                t_data['status'] = 'done'
+            execution = t_data.get('execution')
+            if isinstance(execution, dict) and execution.get('state') == 'completed':
+                t_data['execution'] = {**execution, 'state': 'done'}
             if 'integration' in t_data and isinstance(t_data['integration'], str):
                 t_data['labels'] = [t_data.pop('integration')]
             if hasattr(self, '_project_ticket_evidence'):

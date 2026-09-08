@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "planfile"
-version = "0.1.124"
+version = "0.1.125"
 description = "SDLC automation platform - strategic project management with CI/CD integration and automated bug-fix loops"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -67,14 +67,13 @@ dev = [
     "mypy>=1.10",
     "black>=23.0",
     "isort>=5.12",
-    "goal>=2.1.0",
     "costs>=0.1.20",
     "pfix>=0.1.60"
 ]
 
 [project.urls]
-Homepage = "https://github.com/wronai/strategy"
-Repository = "https://github.com/wronai/strategy"
+Homepage = "https://github.com/semcod/planfile"
+Repository = "https://github.com/semcod/planfile"
 Documentation = "https://strategy.readthedocs.io"
 
 [tool.setuptools.packages.find]
@@ -82,7 +81,7 @@ where = ["."]
 include = ["planfile*"]
 
 [tool.setuptools.package-data]
-"planfile" = ["examples/**/*.yaml", "examples/**/*.yml"]
+"planfile" = ["examples/**/*.yaml", "examples/**/*.yml", "schemas/*.json"]
 
 [tool.ruff]
 line-length = 100
@@ -173,3 +172,9 @@ max_commits = 500
 
 # Cost thresholds for badge colors (USD)
 badge_color_thresholds = { low = 1.0, medium = 5.0, high = 10.0, critical = 50.0 }
+
+[tool.uv.dependency-groups.automation]
+requires-python = ">=3.12"
+
+[dependency-groups]
+automation = ["goal>=2.2.0"]

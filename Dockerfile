@@ -1,28 +1,25 @@
 # Planfile CI/CD Runner Docker Image
-FROM python:3.11-slim
+# uv 0.11.28 and Python 3.12.14 are selected by immutable multi-platform
+# manifest digests. Keep the human-readable versions in this comment only.
+FROM ghcr.io/astral-sh/uv@sha256:0f36cb9361a3346885ca3677e3767016687b5a170c1a6b88465ec14aefec90aa AS uv
+FROM python@sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254 AS runtime
+
+COPY --from=uv /uv /uvx /bin/
 
 # Install system dependencies
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
-    curl \
     jq \
     && rm -rf /var/lib/apt/lists/*
-
-# Install Ollama for local LLM support
-RUN curl -fsSL https://ollama.ai/install.sh | sh
 
 # Set working directory
 WORKDIR /app
 
-# Copy requirements
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Install Planfile with all integrations
-RUN pip install --no-cache-dir planfile[all]
-
-# Install LLX
-RUN pip install --no-cache-dir llx
+# Install the local package and all runner integrations from the committed,
+# hash-bearing lockfile. Frozen mode refuses to resolve or rewrite anything.
+COPY pyproject.toml uv.lock README.md ./
+COPY planfile/ ./planfile/
+RUN uv sync --frozen --no-dev --extra all --no-editable
 
 # Copy entrypoint script
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
@@ -35,9 +32,8 @@ RUN mkdir -p /workspace /app/results
 ENV PYTHONPATH=/app
 ENV WORKSPACE=/workspace
 ENV RESULTS_DIR=/app/results
-
-# Expose port for Ollama
-EXPOSE 11434
+ENV VIRTUAL_ENV=/app/.venv
+ENV PATH="/app/.venv/bin:${PATH}"
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \

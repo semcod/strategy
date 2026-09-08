@@ -7,9 +7,68 @@ Run with: python -m planfile.mcp.server
 """
 
 import json
+import os
+from pathlib import Path
 
 from planfile import TicketSource
 from planfile.server_common import get_planfile
+
+_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
+_MUTATING_TOOLS = frozenset(
+    {
+        "planfile_create_ticket",
+        "planfile_update_ticket",
+        "planfile_move_ticket",
+        "planfile_yaml_patch",
+    }
+)
+_READ_ONLY_DSL_VERBS = frozenset({"get", "help", "list", "query", "show", "validate"})
+
+
+def _enabled(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in _TRUE_VALUES
+
+
+def _require_mutation(action: str) -> None:
+    if not _enabled("PLANFILE_MCP_ALLOW_MUTATION"):
+        raise PermissionError(
+            f"MCP mutation '{action}' is disabled; set PLANFILE_MCP_ALLOW_MUTATION=1"
+        )
+
+
+def _project_root() -> Path:
+    return Path(os.getenv("PLANFILE_MCP_PROJECT_ROOT", ".")).expanduser().resolve()
+
+
+def _require_project_path(raw_path: object) -> str:
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        raise ValueError("project_path must be a non-empty string")
+    candidate = Path(raw_path).expanduser().resolve(strict=False)
+    try:
+        candidate.relative_to(_project_root())
+    except ValueError as exc:
+        raise PermissionError(
+            "planfile MCP path is outside PLANFILE_MCP_PROJECT_ROOT"
+        ) from exc
+    return str(candidate)
+
+
+def _guard_tool_call(name: str, arguments: dict) -> None:
+    if "project_path" in arguments or name in {
+        "planfile_dsl",
+        "planfile_yaml_get",
+        "planfile_yaml_patch",
+        "planfile_list_sprints",
+    }:
+        _require_project_path(arguments.get("project_path", "."))
+
+    if name in _MUTATING_TOOLS:
+        _require_mutation(name)
+    elif name == "planfile_dsl":
+        command = str(arguments.get("command") or "").strip()
+        verb = command.split(maxsplit=1)[0].lower() if command else ""
+        if verb not in _READ_ONLY_DSL_VERBS:
+            _require_mutation("planfile_dsl")
 
 # ── MCP tool definitions (JSON-Schema) ──
 
@@ -153,15 +212,16 @@ TOOLS = [
 def handle_tool_call(name: str, arguments: dict) -> dict:
     """Dispatch an MCP tool call and return the result dict."""
 
+    _guard_tool_call(name, arguments)
+
     if name == "planfile_dsl":
         from planfile.dsl import DSLExecutor
-        executor = DSLExecutor(project_path=arguments.get("project_path", "."))
+        executor = DSLExecutor(project_path=_require_project_path(arguments.get("project_path", ".")))
         result = executor.run(arguments.get("command", ""))
         return result.to_dict()
 
     if name == "planfile_yaml_get":
         import yaml
-        from pathlib import Path
         pf = get_planfile()
         pf_path = Path(pf.store.project_dir) / "planfile.yaml"
         if not pf_path.exists():
@@ -171,7 +231,6 @@ def handle_tool_call(name: str, arguments: dict) -> dict:
 
     if name == "planfile_yaml_patch":
         import yaml
-        from pathlib import Path
         pf = get_planfile()
         pf_path = Path(pf.store.project_dir) / "planfile.yaml"
         if not pf_path.exists():
@@ -191,7 +250,6 @@ def handle_tool_call(name: str, arguments: dict) -> dict:
 
     if name == "planfile_list_sprints":
         import yaml
-        from pathlib import Path
         pf = get_planfile()
         pf_path = Path(pf.store.project_dir) / "planfile.yaml"
         if not pf_path.exists():

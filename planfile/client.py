@@ -158,8 +158,9 @@ class PlanfileClient:
         error: str,
         reason: str | None = None,
         actor: str | None = None,
+        expected_updated_at: str | None = None,
     ) -> TicketTransitionResult:
-        """Record one failed execution attempt without deciding its retry policy."""
+        """Record one failed attempt, optionally only for an observed ticket revision."""
 
         return self._apply(
             "fail",
@@ -168,6 +169,7 @@ class PlanfileClient:
                 error=error,
                 reason=reason,
                 actor=actor,
+                expected_updated_at=expected_updated_at,
             ),
         )
 

@@ -630,7 +630,7 @@ wheels = [
 
 [[package]]
 name = "costs"
-version = "0.1.53"
+version = "0.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anthropic" },
@@ -642,11 +642,12 @@ dependencies = [
     { name = "pandas", version = "3.0.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "python-dotenv" },
     { name = "tiktoken" },
+    { name = "tomli", marker = "python_full_version < '3.11'" },
     { name = "typer" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/64/02/126b813e063a47c7e7efef481ac144747f94fd05ae39ee9d5c3c6253a09f/costs-0.1.53.tar.gz", hash = "sha256:9f9f76a9e523e899b72a658c574e33145f0f25b97554c15f70dc714206d3d8ca", size = 30980, upload-time = "2026-07-02T14:11:25.407Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e4/6f/7f3c72d6d4b5264bd5a3447e18a3b5184bffee143f72c8d023bb759afd1a/costs-0.2.0.tar.gz", hash = "sha256:3782bae859725dae30f697b5f3e5aa5d84e06feadebc5782ae706e21d46437af", size = 44606, upload-time = "2026-09-05T15:49:55.524Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/bd/0e/a6c82f642985c19f6b42a86e5aaf54086fab4ab3771d54e932ec78a7d577/costs-0.1.53-py3-none-any.whl", hash = "sha256:2795668c83a5974c66b1fb6d7831248a481e1bb009f68c4b345d74d357205b88", size = 35990, upload-time = "2026-07-02T14:11:24.146Z" },
+    { url = "https://files.pythonhosted.org/packages/1d/7e/fc91d9fdc7a1ceb9116daffab27124a54f6e8887c9d59d906df43dcbfa6a/costs-0.2.0-py3-none-any.whl", hash = "sha256:4798b8535cbbcbb354e440ebce91365f17c910414bf5831a0610998ae6e679af", size = 48625, upload-time = "2026-09-05T15:49:54.054Z" },
 ]
 
 [[package]]
@@ -870,7 +871,7 @@ name = "exceptiongroup"
 version = "1.3.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "typing-extensions", marker = "python_full_version < '3.11'" },
+    { name = "typing-extensions" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/50/79/66800aadf48771f6b62f7eb014e352e5d06856655206165d775e675a02c9/exceptiongroup-1.3.1.tar.gz", hash = "sha256:8b412432c6055b0b7d14c310000ae93352ed6754f70fa8f7c34141f91c4e3219", size = 30371, upload-time = "2025-11-21T23:01:54.787Z" }
 wheels = [
@@ -1148,7 +1149,7 @@ wheels = [
 
 [[package]]
 name = "goal"
-version = "2.1.284"
+version = "2.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "click" },
@@ -1158,9 +1159,9 @@ dependencies = [
     { name = "tomlkit" },
     { name = "typer" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/bf/ed/3ef5beaa56627e95a66269adcfce7c219fff1948b93fc6f2f209fb0cea66/goal-2.1.284.tar.gz", hash = "sha256:61d47e6b68ba499fefad17b3df4bc4b6647da9db80a5dbc0918165c81d3f8ab1", size = 334328, upload-time = "2026-07-23T19:42:09.372Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c7/9c/135e3f67a7324c3c49ef4246f5518b59ad90226e62c3d30ae20cba005c1d/goal-2.2.0.tar.gz", hash = "sha256:e9e2c1ac9493dae3b887b16d503f7c1f83d02ddcbdd3c5cf58d44a458bb2662f", size = 399786, upload-time = "2026-09-05T19:41:55.329Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/09/30/8155e85057ef3a8871f04db2a14b10d2216c0af68957f36f0417c2b44821/goal-2.1.284-py3-none-any.whl", hash = "sha256:d00dab399a774d07da902e1ef42ad5282e513e65410bace0c3185b555f365777", size = 309816, upload-time = "2026-07-23T19:42:07.494Z" },
+    { url = "https://files.pythonhosted.org/packages/24/69/8a4cf5710683bb777f1f6e4cd44dd3907befe97b94c6ea6e97d4305b4e44/goal-2.2.0-py3-none-any.whl", hash = "sha256:0d8f93aa317ac92a66b64b797e210a5d66044ce8db2cb05b012b03d42aced95e", size = 349709, upload-time = "2026-09-05T19:41:53.615Z" },
 ]
 
 [[package]]
@@ -2353,10 +2354,10 @@ resolution-markers = [
     "python_full_version < '3.11'",
 ]
 dependencies = [
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "python-dateutil", marker = "python_full_version < '3.11'" },
-    { name = "pytz", marker = "python_full_version < '3.11'" },
-    { name = "tzdata", marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" } },
+    { name = "python-dateutil" },
+    { name = "pytz" },
+    { name = "tzdata" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/33/01/d40b85317f86cf08d853a4f495195c73815fdf205eef3993821720274518/pandas-2.3.3.tar.gz", hash = "sha256:e05e1af93b977f7eafa636d043f9f94c7ee3ac81af99c13508215942e64c993b", size = 4495223, upload-time = "2025-09-29T23:34:51.853Z" }
 wheels = [
@@ -2428,10 +2429,10 @@ resolution-markers = [
     "python_full_version == '3.11.*' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 dependencies = [
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "python-dateutil", marker = "python_full_version >= '3.11'" },
-    { name = "tzdata", marker = "(python_full_version >= '3.11' and sys_platform == 'emscripten') or (python_full_version >= '3.11' and sys_platform == 'win32')" },
+    { name = "python-dateutil" },
+    { name = "tzdata", marker = "sys_platform == 'emscripten' or sys_platform == 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/be/4f/5f3422a2afec5ffc46308b79e53291365a93748b498ac2e58bead0197916/pandas-3.0.5.tar.gz", hash = "sha256:dca3734d6ab7c906e6730f0788b0a1dbb9f2467731f9711f77995c8e9d62d712", size = 4658219, upload-time = "2026-07-22T22:19:28.819Z" }
 wheels = [
@@ -2510,7 +2511,7 @@ name = "pexpect"
 version = "4.9.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "ptyprocess", marker = "python_full_version < '3.11' or sys_platform != 'win32'" },
+    { name = "ptyprocess" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/42/92/cc564bf6381ff43ce1f4d06852fc19a2f11d180f23dc32d9588bee2f149d/pexpect-4.9.0.tar.gz", hash = "sha256:ee7d41123f3c9911050ea2c2dac107568dc43b2d3b0c7557a33212c398ead30f", size = 166450, upload-time = "2023-11-25T09:07:26.339Z" }
 wheels = [
@@ -2559,7 +2560,7 @@ wheels = [
 
 [[package]]
 name = "planfile"
-version = "0.1.124"
+version = "0.1.125"
 source = { editable = "." }
 dependencies = [
     { name = "filelock" },
@@ -2597,7 +2598,6 @@ dev = [
     { name = "black" },
     { name = "costs" },
     { name = "fastapi" },
-    { name = "goal" },
     { name = "isort" },
     { name = "mypy" },
     { name = "pfix" },
@@ -2626,6 +2626,11 @@ openai = [
     { name = "openai" },
 ]
 
+[package.dev-dependencies]
+automation = [
+    { name = "goal", marker = "python_full_version >= '3.12'" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "anthropic", marker = "extra == 'all'", specifier = ">=0.25" },
@@ -2636,7 +2641,6 @@ requires-dist = [
     { name = "fastapi", marker = "extra == 'api'", specifier = ">=0.111" },
     { name = "fastapi", marker = "extra == 'dev'", specifier = ">=0.111" },
     { name = "filelock", specifier = ">=3.0" },
-    { name = "goal", marker = "extra == 'dev'", specifier = ">=2.1.0" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "isort", marker = "extra == 'dev'", specifier = ">=5.12" },
     { name = "jira", marker = "extra == 'all'", specifier = ">=3.5" },
@@ -2670,6 +2674,9 @@ requires-dist = [
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'dev'", specifier = ">=0.30" },
 ]
 provides-extras = ["github", "jira", "gitlab", "api", "litellm", "openai", "anthropic", "llx", "all", "dev"]
+
+[package.metadata.requires-dev]
+automation = [{ name = "goal", marker = "python_full_version >= '3.12'", specifier = ">=2.2.0" }]
 
 [[package]]
 name = "platformdirs"

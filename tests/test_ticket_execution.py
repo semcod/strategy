@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+import yaml
 
 from planfile import (
     Planfile,
@@ -12,7 +13,55 @@ from planfile import (
     TicketOutputs,
     TicketSource,
 )
-from planfile.core.store import ImmutableTerminalReopenError
+from planfile.core.store import ImmutableTerminalReopenError, TicketUpdatedAtConflictError
+
+
+def test_legacy_completed_terminal_is_projected_as_done_without_rewriting_yaml(tmp_path):
+    pf = Planfile(str(tmp_path))
+    ticket = pf.create_ticket(
+        name="Historical completed terminal",
+        execution=TicketExecution(state="running"),
+    )
+    sprint_path = tmp_path / ".planfile" / "sprints" / "current.yaml"
+    stored = yaml.safe_load(sprint_path.read_text(encoding="utf-8"))
+    raw_ticket = stored["sprint"]["tickets"][ticket.id]
+    raw_ticket["status"] = "completed"
+    raw_ticket["execution"]["state"] = "completed"
+    sprint_path.write_text(yaml.safe_dump(stored, sort_keys=False), encoding="utf-8")
+
+    loaded = pf.get_ticket(ticket.id)
+
+    assert loaded is not None
+    assert loaded.status == "done"
+    assert loaded.execution is not None
+    assert loaded.execution.state == "done"
+    authoritative = yaml.safe_load(sprint_path.read_text(encoding="utf-8"))
+    assert authoritative["sprint"]["tickets"][ticket.id]["status"] == "completed"
+    assert authoritative["sprint"]["tickets"][ticket.id]["execution"]["state"] == "completed"
+
+
+def test_legacy_completed_terminal_is_projected_as_done_without_rewriting_yaml(tmp_path):
+    pf = Planfile(str(tmp_path))
+    ticket = pf.create_ticket(
+        name="Historical completed terminal",
+        execution=TicketExecution(state="running"),
+    )
+    sprint_path = tmp_path / ".planfile" / "sprints" / "current.yaml"
+    stored = yaml.safe_load(sprint_path.read_text(encoding="utf-8"))
+    raw_ticket = stored["sprint"]["tickets"][ticket.id]
+    raw_ticket["status"] = "completed"
+    raw_ticket["execution"]["state"] = "completed"
+    sprint_path.write_text(yaml.safe_dump(stored, sort_keys=False), encoding="utf-8")
+
+    loaded = pf.get_ticket(ticket.id)
+
+    assert loaded is not None
+    assert loaded.status == "done"
+    assert loaded.execution is not None
+    assert loaded.execution.state == "done"
+    authoritative = yaml.safe_load(sprint_path.read_text(encoding="utf-8"))
+    assert authoritative["sprint"]["tickets"][ticket.id]["status"] == "completed"
+    assert authoritative["sprint"]["tickets"][ticket.id]["execution"]["state"] == "completed"
 
 
 def test_ticket_round_trip_with_execution_fields(tmp_path):
@@ -219,6 +268,80 @@ def test_failed_attempt_requeues_until_retry_budget_is_exhausted(tmp_path):
     assert exhausted.status == "failed"
     assert exhausted.execution.state == "failed"
     assert exhausted.execution.attempt == 2
+
+
+@pytest.mark.parametrize("sharded", [False, True])
+def test_fail_ticket_rejects_stale_updated_at_without_mutation(tmp_path, sharded):
+    pf = Planfile(str(tmp_path))
+    if sharded:
+        config = pf.store._read_config()
+        config["archive"]["enabled"] = False
+        pf.store._write_config(config)
+        pf.store.migrate_to_sharded_yaml(shard_size=100)
+    ticket = pf.create_ticket(
+        name="Atomic stale failure guard",
+        execution=TicketExecution(state="running", assigned_to="bot:test", max_attempts=2),
+    )
+    observed_updated_at = ticket.model_dump(mode="json")["updated_at"]
+    changed = pf.update_ticket(
+        ticket.id,
+        priority="high",
+        actor="bot:other",
+        reason="concurrent_priority_change",
+    )
+    assert changed is not None
+    history_before = list(changed.history)
+    events_before = pf.store.operational_events(ticket_id=ticket.id)
+
+    with pytest.raises(
+        TicketUpdatedAtConflictError,
+        match="ticket_updated_at_precondition_failed",
+    ):
+        pf.fail_ticket(
+            ticket.id,
+            error="stale_watchdog_failure",
+            actor="bot:watchdog",
+            expected_updated_at=observed_updated_at,
+        )
+
+    current = pf.get_ticket(ticket.id)
+    assert current is not None
+    assert current.priority == "high"
+    assert current.status == "open"
+    assert current.execution.state == "running"
+    assert current.execution.attempt == 0
+    assert current.history == history_before
+    assert pf.store.operational_events(ticket_id=ticket.id) == events_before
+
+
+def test_fail_ticket_accepts_updated_at_from_append_only_evidence_projection(tmp_path):
+    pf = Planfile(str(tmp_path))
+    ticket = pf.create_ticket(
+        name="Candidate with evidence",
+        execution=TicketExecution(state="running", assigned_to="bot:test", max_attempts=2),
+    )
+    projected, recorded = pf.append_ticket_evidence(
+        ticket.id,
+        idempotency_key="heartbeat-1",
+        collection="heartbeats",
+        evidence={"status": "observed"},
+        reason="worker heartbeat",
+        actor="bot:test",
+    )
+    assert recorded is True
+    assert projected is not None
+    expected_updated_at = projected.model_dump(mode="json")["updated_at"]
+
+    failed = pf.fail_ticket(
+        ticket.id,
+        error="worker_stopped_after_heartbeat",
+        actor="bot:watchdog",
+        expected_updated_at=expected_updated_at,
+    )
+
+    assert failed is not None
+    assert failed.execution.state == "ready"
+    assert failed.execution.attempt == 1
 
 
 @pytest.mark.parametrize("terminal_status", ["done", "canceled", "blocked"])

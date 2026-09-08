@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import timezone, datetime, timedelta
 
 import yaml
 
@@ -26,7 +26,7 @@ def _store(tmp_path, **archive_config) -> Store:
 
 
 def _ticket(ticket_id: str, status: str, age_days: int = 0) -> Ticket:
-    timestamp = datetime(2026, 7, 20, 12, tzinfo=UTC) - timedelta(minutes=age_days)
+    timestamp = datetime(2026, 7, 20, 12, tzinfo=timezone.utc) - timedelta(minutes=age_days)
     return Ticket(
         id=ticket_id,
         name=ticket_id,
@@ -181,8 +181,8 @@ def test_stale_terminal_tickets_move_below_capacity_limits(tmp_path):
         max_current_bytes=10_000_000,
         retain_terminal_days=1,
     )
-    yesterday = datetime.now(UTC) - timedelta(days=1)
-    today = datetime.now(UTC)
+    yesterday = datetime.now(timezone.utc) - timedelta(days=1)
+    today = datetime.now(timezone.utc)
 
     store.create_ticket(
         Ticket(
@@ -214,8 +214,8 @@ def test_stale_terminal_tickets_move_below_capacity_limits(tmp_path):
 
 def test_history_is_partitioned_by_terminal_completion_day(tmp_path):
     store = _store(tmp_path, retain_terminal_days=0)
-    two_days_ago = datetime.now(UTC) - timedelta(days=2)
-    yesterday = datetime.now(UTC) - timedelta(days=1)
+    two_days_ago = datetime.now(timezone.utc) - timedelta(days=2)
+    yesterday = datetime.now(timezone.utc) - timedelta(days=1)
 
     for ticket_id, timestamp in (
         ("PLF-001", two_days_ago),
@@ -238,7 +238,7 @@ def test_history_is_partitioned_by_terminal_completion_day(tmp_path):
 
 def test_zero_day_retention_moves_fresh_terminal_ticket_immediately(tmp_path):
     store = _store(tmp_path, retain_terminal_days=0)
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
 
     store.create_ticket(
         Ticket(
@@ -256,7 +256,7 @@ def test_zero_day_retention_moves_fresh_terminal_ticket_immediately(tmp_path):
 
 def test_active_lookup_does_not_parse_history_first(tmp_path, monkeypatch):
     store = _store(tmp_path, retain_terminal_days=0)
-    yesterday = datetime.now(UTC) - timedelta(days=1)
+    yesterday = datetime.now(timezone.utc) - timedelta(days=1)
     store.create_ticket(
         Ticket(
             id="PLF-001",
