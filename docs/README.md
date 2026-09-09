@@ -1,6 +1,7 @@
 # Generated Planfile reference
 
 Current maintained [Python API](information/python-api.md).
+Optional executor context: [metrics diagnostics](information/executor-metrics.md).
 
 For maintained documentation navigation, start with
 [`NAVIGATION.md`](information/navigation.md). The content below is a generated

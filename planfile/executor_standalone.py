@@ -10,8 +10,7 @@ from typing import Any
 from planfile.core.models import Strategy, Task
 
 
-if __name__ == "__main__":
-    logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -228,6 +227,8 @@ Description:
     - Lines of code: {metrics.get('total_lines', 'N/A')}
     - Average complexity: {metrics.get('avg_cc', 'N/A')}
     - Max complexity: {metrics.get('max_cc', 'N/A')}
+    - File-read coverage complete: {metrics.get('complete', 'unknown')}
+    - Files omitted due to read errors: {metrics.get('files_failed', 'unknown')}
 
 """
 
@@ -253,6 +254,7 @@ Focus on practical, actionable steps.
             total_lines = 0
             max_cc = 0
             total_files = len(py_files)
+            files_failed = 0
 
             for py_file in py_files:
                 if py_file.is_file():
@@ -264,8 +266,12 @@ Focus on practical, actionable steps.
                         # Simple CC estimation (count control flow keywords)
                         cc = content.count(' if ') + content.count(' for ') + content.count(' while ') + content.count(' except ')
                         max_cc = max(max_cc, cc)
-                    except Exception:
-                        pass
+                    except (OSError, UnicodeDecodeError) as exc:
+                        files_failed += 1
+                        logger.warning(
+                            "PLANFILE_METRICS_FILE_READ_FAILED error_type=%s",
+                            type(exc).__name__,
+                        )
 
             avg_cc = max_cc / total_files if total_files > 0 else 0
 
@@ -273,9 +279,14 @@ Focus on practical, actionable steps.
                 'total_files': total_files,
                 'total_lines': total_lines,
                 'avg_cc': round(avg_cc, 1),
-                'max_cc': max_cc
+                'max_cc': max_cc,
+                'files_failed': files_failed,
+                'complete': files_failed == 0,
             }
-        except Exception:
+        except OSError as exc:
+            logger.warning(
+                "PLANFILE_METRICS_UNAVAILABLE error_type=%s", type(exc).__name__
+            )
             return None
 
 
