@@ -884,12 +884,12 @@ docker-compose exec sprintstrat-runner planfile auto loop \
 
 ## 📚 Documentation
 
-- [Documentation Navigation](docs/NAVIGATION.md)
-- [CI/CD Integration Guide](docs/CI_CD_INTEGRATION.md)
-- [API Reference](docs/API.md)
+- [Documentation Navigation](docs/information/navigation.md)
+- [CI/CD Integration Guide](docs/information/ci-cd-integration.md)
+- [API Reference](docs/information/python-api.md)
 - [CLI Reference](docs/CLI.md)
-- [Examples](examples/)
-- [Architecture Overview](docs/summaries/)
+- [Examples](examples)
+- [Architecture Overview](docs/summaries)
 - [Migration Guide](docs/guides/MIGRATION_GUIDE.md)
 - [Performance Guide](docs/guides/PERFORMANCE.md)
 - [Examples Runner Guide](docs/guides/README_EXAMPLES.md)
@@ -996,17 +996,17 @@ planfile examples run --all
 
 ### Featured Examples
 
-- **[checkbox-tickets](examples/checkbox-tickets/)** - Native markdown checkbox support (`- [ ]` / `- [x]`)
-- **[code2llm](examples/code2llm/)** - Code analysis with LLM integration
-- **[bash-generation](examples/bash-generation/)** - Generate bash scripts from strategies
-- **[cli-commands](examples/cli-commands/)** - CLI usage patterns
-- **[advanced-usage](examples/advanced-usage/)** - CI/CD integration examples
-- **[interactive-tests](examples/interactive-tests/)** - Interactive mode demonstrations
-- **[ecosystem](examples/ecosystem/)** - MCP, LLX, and proxy routing integrations
-- **[cli](examples/cli/)** - DSL command-line interface examples
-- **[mcp](examples/mcp/)** - MCP DSL tool integration
-- **[python-api](examples/python-api/)** - Python API DSL usage
-- **[rest-api](examples/rest-api/)** - REST API and WebSocket DSL
+- **[checkbox-tickets](examples/checkbox-tickets)** - Native markdown checkbox support (`- [ ]` / `- [x]`)
+- **[code2llm](examples/code2llm)** - Code analysis with LLM integration
+- **[bash-generation](examples/bash-generation)** - Generate bash scripts from strategies
+- **[cli-commands](examples/cli-commands)** - CLI usage patterns
+- **[advanced-usage](examples/advanced-usage)** - CI/CD integration examples
+- **[interactive-tests](examples/interactive-tests)** - Interactive mode demonstrations
+- **[ecosystem](examples/ecosystem)** - MCP, LLX, and proxy routing integrations
+- **[cli](examples/cli)** - DSL command-line interface examples
+- **[mcp](examples/mcp)** - MCP DSL tool integration
+- **[python-api](examples/python-api)** - Python API DSL usage
+- **[rest-api](examples/rest-api)** - REST API and WebSocket DSL
 
 # examples/quick-start.yaml
 name: "Quick Start Demo"
@@ -1026,7 +1026,7 @@ sprints:
         priority: "high"
 ```
 
-For more examples, see the [examples directory](examples/).
+For more examples, see the [examples directory](examples).
 
 ### Web Project Strategy
 
@@ -1186,7 +1186,7 @@ Contributions are welcome! Please feel free to submit a Pull Request. For major 
 
 ## 📞 Support
 
-- 📖 [Documentation](docs/)
+- 📖 [Documentation](docs)
 - 🐛 [Issue Tracker](https://github.com/semcod/planfile/issues)
 - 💬 [Discussions](https://github.com/semcod/planfile/discussions)
 

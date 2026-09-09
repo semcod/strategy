@@ -1,7 +1,9 @@
 # Generated Planfile reference
 
+Current maintained [Python API](information/python-api.md).
+
 For maintained documentation navigation, start with
-[`NAVIGATION.md`](NAVIGATION.md). The content below is a generated
+[`NAVIGATION.md`](information/navigation.md). The content below is a generated
 source-analysis snapshot and may be refreshed by code2docs.
 
 <!-- code2docs:start -->
@@ -13,7 +15,7 @@ source-analysis snapshot and may be refreshed by code2docs.
 > Auto-generated project documentation from source code analysis.
 
 **Author:** Tom Sapletta  
-**License:** Apache-2.0[(LICENSE)](./LICENSE)  
+**License:** Apache-2.0[(LICENSE)](LICENSE)
 **Repository:** [https://github.com/semcod/planfile](https://github.com/semcod/planfile)
 
 ## Installation
@@ -668,7 +670,7 @@ planfile/
 - Tom Softreck <tom@sapletta.com>
 - Tom Sapletta <tom-sapletta-com@users.noreply.github.com>
 
-We welcome contributions! Please see [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines.
+We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ### Development Setup
 
@@ -690,23 +692,25 @@ pytest
 - 🚀 [Getting Started](https://github.com/semcod/planfile/blob/main/docs/getting-started.md) — Quick start guide
 - 📚 [API Reference](https://github.com/semcod/planfile/blob/main/docs/api.md) — Complete API documentation
 - 🔧 [Configuration](https://github.com/semcod/planfile/blob/main/docs/configuration.md) — Configuration options
-- 💡 [Examples](./examples) — Usage examples and code samples
+- 💡 [Examples](examples) — Usage examples and code samples
 
 ### Generated Files
 
 | Output | Description | Link |
 |--------|-------------|------|
 | `README.md` | Project overview (this file) | — |
-| `docs/api.md` | Consolidated API reference | [View](./docs/api.md) |
-| `docs/modules.md` | Module reference with metrics | [View](./docs/modules.md) |
-| `docs/architecture.md` | Architecture with diagrams | [View](./docs/architecture.md) |
-| `docs/dependency-graph.md` | Dependency graphs | [View](./docs/dependency-graph.md) |
-| `docs/coverage.md` | Docstring coverage report | [View](./docs/coverage.md) |
-| `docs/getting-started.md` | Getting started guide | [View](./docs/getting-started.md) |
-| `docs/configuration.md` | Configuration reference | [View](./docs/configuration.md) |
-| `docs/api-changelog.md` | API change tracking | [View](./docs/api-changelog.md) |
-| `CONTRIBUTING.md` | Contribution guidelines | [View](./CONTRIBUTING.md) |
-| `examples/` | Usage examples | [Browse](./examples) |
+| `docs/api.md` | Consolidated API reference | [View](docs/api.md) |
+| `docs/modules.md` | Module reference with metrics | [View](docs/modules.md) |
+| `docs/architecture.md` | Architecture with diagrams | [View](docs/architecture.md) |
+| `docs/dependency-graph.md` | Dependency graphs | [View](docs/dependency-graph.md) |
+| `docs/coverage.md` | Docstring coverage report | [View](docs/coverage.md) |
+| `docs/getting-started.md` | Getting started guide | [View](docs/getting-started.md) |
+| `docs/configuration.md` | Configuration reference | [View](docs/configuration.md) |
+| `docs/api-changelog.md` | API change tracking | [View](docs/api-changelog.md) |
+| `CONTRIBUTING.md` | Contribution guidelines | [View](CONTRIBUTING.md) |
+| `examples/` | Usage examples | [Browse](examples) |
 | `mkdocs.yml` | MkDocs configuration | — |
 
 <!-- code2docs:end -->
+
+- [ci-cd-integration](information/ci-cd-integration.md)
