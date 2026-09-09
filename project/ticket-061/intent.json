@@ -1,0 +1,13 @@
+{
+  "schema": "new-project.intent/v3",
+  "ticket": "ticket-061",
+  "summary": "Make optional executor metrics read failures observable after Doctor findings 377 and 378",
+  "workstream": "executor-metrics",
+  "classification": {"kind": "SERVICE", "priority": "P2", "origin": "health"},
+  "allowedPaths": ["planfile/executor_standalone.py", "tests/test_executor_metrics.py", "docs/information/executor-metrics.md", "docs/README.md", "project/ticket-061/**"],
+  "forbiddenPaths": [".env", "secrets/**", ".github/**"],
+  "stacks": ["python"],
+  "dependsOn": [],
+  "conflictsWith": [],
+  "integrationTicket": null
+}
