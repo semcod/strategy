@@ -3,14 +3,14 @@
   "schema": "wellmanifest.docs/document/v1",
   "id": "python-api",
   "kind": "information",
-  "version": 1,
+  "version": 2,
   "title": "Current Planfile Python API",
   "status": "proposed",
   "owner": "semcod/planfile",
   "created": "2026-09-09",
-  "updated": "2026-09-09",
-  "review_after": "2026-10-09",
-  "source_revision": "53754107b59a4457264632e1aa53aa8fc9491717",
+  "updated": "2026-09-10",
+  "review_after": "2026-10-10",
+  "source_revision": "cde0727646c006845278d4774c06718cf7e9d148",
   "affected_repositories": [
     "semcod/planfile"
   ],
@@ -18,7 +18,9 @@
     "https://github.com/semcod/planfile/blob/53754107b59a4457264632e1aa53aa8fc9491717/planfile/__init__.py",
     "https://github.com/semcod/planfile/blob/53754107b59a4457264632e1aa53aa8fc9491717/planfile/ci.py",
     "https://github.com/semcod/planfile/blob/53754107b59a4457264632e1aa53aa8fc9491717/planfile/loaders/yaml_loader.py",
-    "https://github.com/semcod/planfile/blob/53754107b59a4457264632e1aa53aa8fc9491717/docs/API.md"
+    "https://github.com/semcod/planfile/blob/53754107b59a4457264632e1aa53aa8fc9491717/docs/API.md",
+    "https://github.com/semcod/planfile/blob/cde0727646c006845278d4774c06718cf7e9d148/planfile/strategy_input.py",
+    "https://github.com/semcod/planfile/blob/cde0727646c006845278d4774c06718cf7e9d148/tests/test_strategy_input.py"
   ]
 }
 ---
@@ -84,6 +86,23 @@ normalization. Invalid input raises `ValueError` with formatted validation
 errors. `save_strategy_yaml(strategy_or_dict, path)` writes YAML; it does not
 execute the strategy. `load_tasks_yaml(path)` reads task-pattern groups.
 The old `load_strategy` and `save_strategy` names are not loader exports.
+
+## Ticket validation and TODO synchronization
+
+`validate_planfile_tickets(strategy_path, project_path)` and
+`sync_todo_checkboxes_from_planfile(strategy_path, project_path)` require a
+readable UTF-8 YAML mapping. An explicit empty mapping (`{}`) is valid; an empty
+file or a YAML sequence is not.
+
+Both functions raise `ValueError` when loading fails, with one of these stable
+messages: `strategy_input_unreadable`, `strategy_input_invalid_encoding`,
+`strategy_input_invalid_yaml`, or `strategy_input_not_mapping`. These messages
+omit YAML contents. Callers must surface the failure or request corrected input;
+they must not treat it as a successful report with zero tickets.
+
+TODO synchronization validates input before processing execution results or
+writing checkboxes, including when `enabled=True` is supplied explicitly.
+Previously these input failures silently became an empty strategy.
 
 ## CI runner
 
