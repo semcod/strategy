@@ -10,15 +10,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
-import yaml
-
-
-def _load_strategy(path: Path) -> dict[str, Any]:
-    try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-    return data if isinstance(data, dict) else {}
+from planfile.strategy_input import load_strategy_mapping as _load_strategy
 
 
 def _normalize_rule(value: Any) -> str:

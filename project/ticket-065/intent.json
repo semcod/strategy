@@ -1,0 +1,29 @@
+{
+  "schema": "new-project.intent/v3",
+  "ticket": "ticket-065",
+  "summary": "Reject invalid strategy input after Doctor diagnoses 381 and 382",
+  "workstream": "strategy-input",
+  "classification": {
+    "kind": "BUG",
+    "priority": "P1",
+    "origin": "health"
+  },
+  "allowedPaths": [
+    "planfile/strategy_input.py",
+    "planfile/ticket_validation.py",
+    "planfile/todo_sync.py",
+    "tests/test_strategy_input.py",
+    "docs/information/python-api.md",
+    "project/ticket-065/**"
+  ],
+  "forbiddenPaths": [
+    ".env",
+    ".github/**"
+  ],
+  "stacks": [
+    "python"
+  ],
+  "dependsOn": [],
+  "conflictsWith": [],
+  "integrationTicket": null
+}

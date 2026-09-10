@@ -6,18 +6,10 @@ import re
 from pathlib import Path
 from typing import Any, Iterable
 
-import yaml
+from planfile.strategy_input import load_strategy_mapping as _load_strategy
 
 _DONE_STATUSES = {"success", "done", "completed", "already_fixed"}
 _CHECKBOX_RE = re.compile(r"^(?P<prefix>\s*-\s*\[)(?P<state>[ xX])(?P<suffix>\]\s+)(?P<body>.*)$")
-
-
-def _load_strategy(path: Path) -> dict[str, Any]:
-    try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-    return data if isinstance(data, dict) else {}
 
 
 def _status_done(status: Any) -> bool:
